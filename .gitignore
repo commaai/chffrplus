@@ -1,0 +1,10 @@
+*.pyc
+.*.swp
+.*.swo
+*.o
+a.out
+*~
+.#*
+dist/
+pandacan.egg-info/
+board/obj/
