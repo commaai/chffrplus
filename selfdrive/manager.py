@@ -360,7 +360,7 @@ def manager_thread():
   if os.getenv("NOBOARD") is None:
     start_managed_process("pandad")
 
-  passive = bool(os.getenv("PASSIVE"))
+  passive = os.getenv("PASSIVE") == "1"
   passive_starter = LocationStarter()
 
   started_ts = None
@@ -551,7 +551,7 @@ def main():
   if params.get("IsRearViewMirror") is None:
     params.put("IsRearViewMirror", "1")
 
-  params.put("Passive", "1" if os.getenv("PASSIVE") else "0")
+  params.put("Passive", "1" if os.getenv("PASSIVE") == "1" else "0")
 
   # put something on screen while we set things up
   if os.getenv("PREPAREONLY") is not None:
