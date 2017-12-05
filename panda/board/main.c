@@ -356,6 +356,9 @@ int usb_cb_control_msg(USB_Setup_TypeDef *setup, uint8_t *resp, int hardwired) {
         if (setup->b.wValue.w == 1) {
           puts("user setting CDP mode\n");
           set_usb_power_mode(USB_POWER_CDP);
+        } else if (setup->b.wValue.w == 2) {
+          puts("user setting DCP mode\n");
+          set_usb_power_mode(USB_POWER_DCP);
         } else {
           puts("user setting CLIENT mode\n");
           set_usb_power_mode(USB_POWER_CLIENT);
@@ -506,6 +509,14 @@ int main() {
   uart_init(USART3, 10400);
   USART3->CR2 |= USART_CR2_LINEN;
 #endif
+
+  // init microsecond system timer
+  // increments 1000000 times per second
+  // generate an update to set the prescaler
+  TIM2->PSC = 48-1;
+  TIM2->CR1 = TIM_CR1_CEN;
+  TIM2->EGR = TIM_EGR_UG;
+  // use TIM2->CNT to read
 
   // enable USB
   usb_init();
