@@ -13,6 +13,8 @@ It uses an [STM32F413](http://www.st.com/en/microcontrollers/stm32f413-423.html?
 
 It is 2nd gen hardware, reusing code and parts from the [NEO](https://github.com/commaai/neo) interface board.
 
+[![Build Status](https://travis-ci.org/commaai/panda.svg?branch=master)](https://travis-ci.org/commaai/panda)
+
 Usage
 ------
 
@@ -51,26 +53,16 @@ Directory structure
 - board      -- Code that runs on the STM32
 - boardesp   -- Code that runs on the ESP8266
 - drivers    -- Drivers (not needed for use with python)
-- lib        -- Python userspace library for interfacing with the panda
+- panda      -- Python userspace library for interfacing with the panda
 - tests      -- Tests and helper programs for panda
 
 Programming (over USB)
 ------
 
-Programming the STM32
-```
-cd board
-./get_sdk.sh
-make recover   # initially
-make           # future
-```
+[Programming the Board (STM32)](board/README.md)
 
-Programming the ESP
-```
-cd boardesp
-./get_sdk.sh
-make
-```
+[Programming the ESP](boardesp/README.md)
+
 
 Debugging
 ------
