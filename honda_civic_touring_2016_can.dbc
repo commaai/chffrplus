@@ -187,13 +187,13 @@ BO_ 506 BRAKE_COMMAND: 8 ADAS
  SG_ CHECKSUM : 59|4@0+ (1,0) [0|3] "" EBCM
 
 BO_ 512 GAS_COMMAND: 3 NEO
- SG_ GAS_COMMAND : 7|16@0+ (0.253984064,-328) [0|1] "" INTERCEPTOR
+ SG_ GAS_COMMAND : 7|16@0+ (0.253984064,-83.3) [0|1] "" INTERCEPTOR
  SG_ COUNTER : 21|2@0+ (1,0) [0|3] "" INTERCEPTOR
  SG_ CHECKSUM : 19|4@0+ (1,0) [0|3] "" INTERCEPTOR
 
 BO_ 513 GAS_SENSOR: 5 INTERCEPTOR
- SG_ INTERCEPTOR_GAS : 7|16@0+ (0.253984064,-328) [0|1] "" NEO
- SG_ INTERCEPTOR_GAS2 : 23|16@0+ (0.126992032,-656) [0|1] "" NEO
+ SG_ INTERCEPTOR_GAS : 7|16@0+ (0.253984064,-83.3) [0|1] "" NEO
+ SG_ INTERCEPTOR_GAS2 : 23|16@0+ (0.126992032,-83.3) [0|1] "" NEO
  SG_ COUNTER : 37|2@0+ (1,0) [0|3] "" NEO
  SG_ CHECKSUM : 35|4@0+ (1,0) [0|3] "" NEO
 
@@ -220,6 +220,8 @@ BO_ 662 CRUISE_BUTTONS: 4 SCM
 
 BO_ 773 SEATBELT_STATUS: 7 BDY
  SG_ SEATBELT_DRIVER_LAMP : 7|1@0+ (1,0) [0|1] "" NEO
+ SG_ PASS_AIRBAG_ON : 15|1@0+ (1,0) [0|1] "" NEO
+ SG_ PASS_AIRBAG_OFF : 14|1@0+ (1,0) [0|1] "" NEO
  SG_ SEATBELT_PASS_UNLATCHED : 10|1@0+ (1,0) [0|1] "" NEO
  SG_ SEATBELT_PASS_LATCHED : 11|1@0+ (1,0) [0|1] "" NEO
  SG_ SEATBELT_DRIVER_UNLATCHED : 12|1@0+ (1,0) [0|1] "" NEO
@@ -310,11 +312,16 @@ BO_ 862 XXX_15: 8 ADAS
  SG_ COUNTER : 61|2@0+ (1,0) [0|3] "" BDY
  SG_ CHECKSUM : 59|4@0+ (1,0) [0|3] "" BDY
 
-BO_ 884 XXX_16: 8 XXX
+BO_ 884 STALK_STATUS: 8 XXX
+ SG_ AUTO_HEADLIGHTS : 46|1@0+ (1,0) [0|1] "" NEO
+ SG_ HIGH_BEAM_HOLD : 47|1@0+ (1,0) [0|1] "" NEO
+ SG_ HIGH_BEAM_FLASH : 45|1@0+ (1,0) [0|1] "" NEO
+ SG_ HEADLIGHTS_ON : 54|1@0+ (1,0) [0|1] "" NEO
  SG_ CHECKSUM : 59|4@0+ (1,0) [0|3] "" NEO
  SG_ COUNTER : 61|2@0+ (1,0) [0|3] "" NEO
 
 BO_ 891 XXX_17: 8 XXX
+ SG_ WIPERS : 17|2@0+ (1,0) [0|3] "" NEO
  SG_ CHECKSUM : 59|4@0+ (1,0) [0|3] "" NEO
  SG_ COUNTER : 61|2@0+ (1,0) [0|3] "" NEO
 
@@ -405,6 +412,8 @@ BO_TX_BU_ 927 : NEO,ADAS;
 
 CM_ SG_ 401 GEAR "10 = reverse, 11 = transition";
 CM_ SG_ 490 LONG_ACCEL "wheel speed derivative, noisy and zero snapping";
+CM_ SG_ 773 PASS_AIRBAG_ON "Might just be indicator light";
+CM_ SG_ 773 PASS_AIRBAG_OFF "Might just be indicator light";
 CM_ SG_ 780 CRUISE_SPEED "255 = no speed";
 CM_ SG_ 804 CRUISE_SPEED_PCM "255 = no speed";
 CM_ SG_ 829 BEEP "beeps are pleasant, chimes are for warnngs etc...";
@@ -421,5 +430,6 @@ VAL_ 780 CRUISE_SPEED 255 "no_speed" 252 "stopped" ;
 VAL_ 780 HUD_LEAD 3 "acc_off" 2 "solid_car" 1 "dashed_car" 0 "no_car" ;
 VAL_ 806 CMBS_BUTTON 3 "pressed" 0 "released" ;
 VAL_ 829 BEEP 3 "single_beep" 2 "triple_beep" 1 "repeated_beep" 0 "no_beep" ;
+VAL_ 891 WIPERS 4 "High" 2 "Low" 0 "Off" ;
 VAL_ 927 ACC_ALERTS 29 "esp_active_acc_canceled" 10 "b_pedal_applied" 9 "speed_too_low" 8 "speed_too_high" 7 "p_brake_applied" 6 "gear_no_d" 5 "seatbelt" 4 "too_steep_downhill" 3 "too_steep_uphill" 2 "too_close" 1 "no_vehicle_ahead" ;
 CM_ "CHFFR_METRIC 330 STEER_ANGLE STEER_ANGLE 0.36 180; CHFFR_METRIC 380 ENGINE_RPM ENGINE_RPM 1 0; CHFFR_METRIC 804 ENGINE_TEMPERATURE ENGINE_TEMPERATURE 1 0";
