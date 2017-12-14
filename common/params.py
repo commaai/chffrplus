@@ -56,6 +56,9 @@ keys = {
 # read:    ui, controls
   "IsMetric": TxType.PERSISTANT,
   "IsRearViewMirror": TxType.PERSISTANT,
+  "IsFcwEnabled": TxType.PERSISTANT,
+  "HasAcceptedTerms": TxType.PERSISTANT,
+  "IsUploadVideoOverCellularEnabled": TxType.PERSISTANT,
 # written: visiond
 # read:    visiond, controlsd
   "CalibrationParams": TxType.PERSISTANT,
@@ -67,6 +70,7 @@ keys = {
   "CarParams": TxType.CLEAR_ON_CAR_START,
 
   "Passive": TxType.PERSISTANT,
+  "DoUninstall": TxType.CLEAR_ON_MANAGER_START,
 }
 
 def fsync_dir(path):

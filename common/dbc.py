@@ -143,7 +143,7 @@ class dbc(object):
     msg = self.msgs.get(x[0])
     if msg is None:
       if x[0] not in self._warned_addresses:
-        print("WARNING: Unknown message address {}".format(x[0]))
+        #print("WARNING: Unknown message address {}".format(x[0]))
         self._warned_addresses.add(x[0])
       return None, None
 
@@ -192,7 +192,15 @@ class dbc(object):
       else:
         out[arr.index(s[0])] = ival
     return name, out
+
+
+  def get_signals(self, msg):
+    return [sgs.name for sgs in self.msgs[msg][1]]
     
 if __name__ == "__main__":
-  import sys
-  print dbc(sys.argv[1])
+   import sys
+   import os
+   from opendbc import DBC_PATH
+
+   dbc_test = dbc(os.path.join(DBC_PATH, sys.argv[1]))
+   print dbc_test.get_signals(0xe4)

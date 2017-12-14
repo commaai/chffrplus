@@ -21,12 +21,14 @@ class Conversions:
 
 
 # Car button codes
+# TODO: this is Honda specific, move to honda/interface.py
 class CruiseButtons:
   RES_ACCEL   = 4
   DECEL_SET   = 3
   CANCEL      = 2
   MAIN        = 1
 
+RADAR_TO_CENTER = 2.7   # RADAR is ~ 2.7m ahead from center of car
 
 # Image params for color cam on acura, calibrated on pre las vegas drive (2016-05-21)
 class ImageParams:
@@ -51,7 +53,7 @@ class ImageParams:
     self.VPY = self.VPY_R + to_int(shift[1])  # current vanishing point with shift
 
 class UIParams:
-  lidar_x, lidar_y, lidar_zoom = 384, 960, 8
+  lidar_x, lidar_y, lidar_zoom = 384, 960, 6
   lidar_car_x, lidar_car_y = lidar_x/2., lidar_y/1.1
   car_hwidth = 1.7272/2 * lidar_zoom
   car_front = 2.6924 * lidar_zoom

@@ -42,9 +42,25 @@ void init(){
 
   /* MPC: initialize the current state feedback. */
   for (i = 0; i < NX; ++i) acadoVariables.x0[ i ] = 0.0;
+
+  for (i = 0; i < N; i++) {
+    int f = 1;
+    if (i > 4){
+      f = 3;
+    }
+    acadoVariables.W[25 * i + 0] = 1.0 * f;
+    acadoVariables.W[25 * i + 6] = 1.0 * f;
+    acadoVariables.W[25 * i + 12] = 1.0 * f;
+    acadoVariables.W[25 * i + 18] = 1.0 * f;
+    acadoVariables.W[25 * i + 24] = 2.0 * f;
+  }
+  acadoVariables.WN[0] = 1.0;
+  acadoVariables.WN[5] = 1.0;
+  acadoVariables.WN[10] = 1.0;
+  acadoVariables.WN[15] = 1.0;
 }
 
-void run_mpc(state_t * x0, log_t * solution,
+int run_mpc(state_t * x0, log_t * solution,
              double l_poly[4], double r_poly[4], double p_poly[4],
              double l_prob, double r_prob, double p_prob, double curvature_factor, double v_ref, double lane_width){
 
@@ -84,7 +100,8 @@ void run_mpc(state_t * x0, log_t * solution,
 
 
   acado_preparationStep();
-  acado_feedbackStep( );
+  acado_feedbackStep();
+  /* printf("lat its: %d\n", acado_getNWSR()); */
 
 	for (i = 0; i <= N; i++){
 		solution->x[i] = acadoVariables.x[i*NX];
@@ -97,5 +114,5 @@ void run_mpc(state_t * x0, log_t * solution,
   acado_shiftControls( 0 );
 
 
-  return;
+  return acado_getNWSR();
 }

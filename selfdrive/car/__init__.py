@@ -1,17 +1,14 @@
-from cereal import car
 import os
+from cereal import car
 
 from common.realtime import sec_since_boot
 from common.fingerprints import eliminate_incompatible_cars, all_known_cars
 
 from selfdrive.swaglog import cloudlog
 import selfdrive.messaging as messaging
-from .honda.interface import CarInterface as HondaInterface
-
-try:
-  from .toyota.interface import CarInterface as ToyotaInterface
-except ImportError:
-  ToyotaInterface = None
+from selfdrive.car.honda.interface import CarInterface as HondaInterface
+from selfdrive.car.toyota.interface import CarInterface as ToyotaInterface
+from selfdrive.car.mock.interface import CarInterface as MockInterface
 
 try:
   from .simulator.interface import CarInterface as SimInterface
@@ -33,7 +30,9 @@ interfaces = {
   "TOYOTA RAV4 2017": ToyotaInterface,
 
   "simulator": SimInterface,
-  "simulator2": Sim2Interface
+  "simulator2": Sim2Interface,
+
+  "mock": MockInterface
 }
 
 # **** for use live only ****
@@ -59,9 +58,14 @@ def fingerprint(logcan, timeout):
         candidate_cars = eliminate_incompatible_cars(can, candidate_cars)
 
     ts = sec_since_boot()
-    # if we only have one car choice and it's been 100ms since we got our first message, exit
-    if len(candidate_cars) == 1 and st is not None and (ts-st) > 0.1:
-      break
+    # if we only have one car choice and the time_fingerprint since we got our first 
+    # message has elapsed, exit. Toyota needs higher time_fingerprint, since DSU does not
+    # broadcast immediately
+    if len(candidate_cars) == 1 and st is not None:
+      time_fingerprint = 1.0 if "TOYOTA" in candidate_cars[0] else 0.1
+      if (ts-st) > time_fingerprint:
+        break
+
     # bail if no cars left or we've been waiting too long
     elif len(candidate_cars) == 0 or (timeout and ts-finger_st > timeout):
       return None, finger
@@ -70,14 +74,20 @@ def fingerprint(logcan, timeout):
   return (candidate_cars[0], finger)
 
 
-def get_car(logcan, sendcan=None, timeout=None):
+def get_car(logcan, sendcan=None, passive=True):
+
+  # TODO: timeout only useful for replays so controlsd can start before unlogger
+  timeout = 1. if passive else None
   candidate, fingerprints = fingerprint(logcan, timeout)
 
   if candidate is None:
     cloudlog.warning("car doesn't match any fingerprints: %r", fingerprints)
-    return None, None
+    if passive:
+      candidate = "mock"
+    else:
+      return None, None
 
   interface_cls = interfaces[candidate]
   params = interface_cls.get_params(candidate, fingerprints)
 
-  return interface_cls(params, logcan, sendcan), params
+  return interface_cls(params, sendcan), params

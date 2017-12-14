@@ -1,1 +1,1 @@
-#define COMMA_VERSION "0.3.8.1-chffrplus"
+#define COMMA_VERSION "0.4.0-chffrplus"

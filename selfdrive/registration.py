@@ -21,14 +21,17 @@ def get_git_branch():
 
 def register():
   params = Params()
-  try:
-    params.put("Version", version)
-    params.put("GitCommit", get_git_commit())
-    params.put("GitBranch", get_git_branch())
+  params.put("Version", version)
+  params.put("GitCommit", get_git_commit())
+  params.put("GitBranch", get_git_branch())
 
-    dongle_id, access_token = params.get("DongleId"), params.get("AccessToken")
+  dongle_id, access_token = params.get("DongleId"), params.get("AccessToken")
+
+  try:
     if dongle_id is None or access_token is None:
-      resp = api_get("v1/pilotauth/", method='POST', imei=get_imei(), serial=get_serial())
+      cloudlog.info("getting pilotauth")
+      resp = api_get("v1/pilotauth/", method='POST', timeout=15,
+                     imei=get_imei(), serial=get_serial())
       dongleauth = json.loads(resp.text)
       dongle_id, access_token = dongleauth["dongle_id"].encode('ascii'), dongleauth["access_token"].encode('ascii')
 
