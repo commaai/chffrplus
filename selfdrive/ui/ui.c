@@ -1351,7 +1351,7 @@ static void ui_update(UIState *s) {
           update_status(s, STATUS_WARNING);
         } else if (datad.alertStatus == cereal_Live100Data_AlertStatus_critical) {
           update_status(s, STATUS_ALERT);
-        } else if (datad.active) {
+        } else if (datad.enabled) {
           update_status(s, STATUS_ENGAGED);
         } else {
           update_status(s, STATUS_DISENGAGED);
