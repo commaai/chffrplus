@@ -175,6 +175,11 @@ int usb_cb_control_msg(USB_Setup_TypeDef *setup, uint8_t *resp, int hardwired) {
       puts(" err: "); puth(can_err_cnt);
       puts("\n");
       break;
+    // **** 0xc1: is grey panda
+    case 0xc1:
+      resp[0] = is_grey_panda;
+      resp_len = 1;
+      break;
     // **** 0xd0: fetch serial number
     case 0xd0:
       #ifdef PANDA
@@ -229,6 +234,8 @@ int usb_cb_control_msg(USB_Setup_TypeDef *setup, uint8_t *resp, int hardwired) {
     case 0xd9:
       if (setup->b.wValue.w == 1) {
         set_esp_mode(ESP_ENABLED);
+      } else if (setup->b.wValue.w == 2) {
+        set_esp_mode(ESP_BOOTMODE);
       } else {
         set_esp_mode(ESP_DISABLED);
       }
@@ -489,6 +496,7 @@ int main() {
   #endif
   puts(has_external_debug_serial ? "  real serial\n" : "  USB serial\n");
   puts(is_giant_panda ? "  GIANTpanda detected\n" : "  not GIANTpanda\n");
+  puts(is_grey_panda ? "  gray panda detected!\n" : "  white panda\n");
   puts(is_entering_bootmode ? "  ESP wants bootmode\n" : "  no bootmode\n");
   gpio_init();
 
