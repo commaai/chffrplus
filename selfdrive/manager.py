@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
+
 import os
 import sys
 import time
@@ -7,13 +8,9 @@ import errno
 import signal
 
 if __name__ == "__main__":
-  if os.path.isfile("/init.qcom.rc"):
-    # check if NEOS update is required
-    while ((not os.path.isfile("/VERSION")
-            or int(open("/VERSION").read()) < 3)
-            and not os.path.isfile("/data/media/0/noupdate")):
-      os.system("curl -o /tmp/updater https://neos.comma.ai/updater && chmod +x /tmp/updater && /tmp/updater")
-      time.sleep(10)
+  if os.path.isfile("/init.qcom.rc") \
+      and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 4):
+    raise Exception("NEOS outdated")
 
   # get a non-blocking stdout
   child_pid, child_pty = os.forkpty()
@@ -44,6 +41,7 @@ if __name__ == "__main__":
 
     os._exit(os.wait()[1])
 
+import glob
 import shutil
 import hashlib
 import importlib
@@ -58,6 +56,7 @@ os.environ['BASEDIR'] = BASEDIR
 import usb1
 import zmq
 from setproctitle import setproctitle
+from smbus2 import SMBus
 
 from common.params import Params
 from common.realtime import sec_since_boot
@@ -71,6 +70,8 @@ from selfdrive.version import version
 import selfdrive.crash as crash
 
 from selfdrive.loggerd.config import ROOT
+
+EON = os.path.exists("/EON")
 
 # comment out anything you don't want to run
 managed_processes = {
@@ -89,6 +90,7 @@ managed_processes = {
   "sensord": ("selfdrive/sensord", ["./sensord"]),
   "gpsd": ("selfdrive/sensord", ["./gpsd"]),
   "updated": "selfdrive.updated",
+  #"gpsplanner": "selfdrive.controls.gps_plannerd",
 }
 
 running = {}
@@ -118,6 +120,7 @@ car_started_processes = [
   'radard',
   'visiond',
   'proclogd',
+  # 'gpsplanner,
 ]
 
 def register_managed_process(name, desc, car_started=False):
@@ -276,10 +279,6 @@ def system(cmd):
       output=e.output[-1024:],
       returncode=e.returncode)
 
-EON = os.path.exists("/EON")
-if EON:
-  from smbus2 import SMBus
-
 def setup_eon_fan():
   if not EON:
     return
@@ -315,8 +314,10 @@ _TEMP_THRS_H = [50., 65., 80., 10000]
 _TEMP_THRS_L = [42.5, 57.5, 72.5, 10000]
 # fan speed options
 _FAN_SPEEDS = [0, 16384, 32768, 65535]
+# max fan speed only allowed if battery if hot
+_BAT_TEMP_THERSHOLD = 45.
 
-def handle_fan(max_temp, fan_speed):
+def handle_fan(max_temp, bat_temp, fan_speed):
   new_speed_h = next(speed for speed, temp_h in zip(_FAN_SPEEDS, _TEMP_THRS_H) if temp_h > max_temp)
   new_speed_l = next(speed for speed, temp_l in zip(_FAN_SPEEDS, _TEMP_THRS_L) if temp_l > max_temp)
 
@@ -326,6 +327,10 @@ def handle_fan(max_temp, fan_speed):
   elif new_speed_l < fan_speed:
     # update speed if using the low thresholds results in fan speed decrement
     fan_speed = new_speed_l
+
+  if bat_temp < _BAT_TEMP_THERSHOLD:
+    # no max fan speed unless battery is hot
+    fan_speed = min(fan_speed, _FAN_SPEEDS[-2])
 
   set_eon_fan(fan_speed/16384)
 
@@ -425,7 +430,8 @@ def manager_thread():
     # TODO: add car battery voltage check
     max_temp = max(msg.thermal.cpu0, msg.thermal.cpu1,
                    msg.thermal.cpu2, msg.thermal.cpu3) / 10.0
-    fan_speed = handle_fan(max_temp, fan_speed)
+    bat_temp = msg.thermal.bat/1000.
+    fan_speed = handle_fan(max_temp, bat_temp, fan_speed)
     msg.thermal.fanSpeed = fan_speed
 
     msg.thermal.started = started_ts is not None
@@ -527,34 +533,50 @@ def install_apk(path):
   return ret == 0
 
 def update_apks():
+  # patch apks
+  if os.getenv("PREPAREONLY"):
+    # assume we have internet, download too
+    patched = subprocess.call([os.path.join(BASEDIR, "apk/external/patcher.py")])
+  else:
+    patched = subprocess.call([os.path.join(BASEDIR, "apk/external/patcher.py"), "patch"])
+  cloudlog.info("patcher: %r" % (patched,))
+
   # install apks
   installed = get_installed_apks()
-  for app in os.listdir(os.path.join(BASEDIR, "apk/")):
-    if ".apk" in app:
-      app = app.split(".apk")[0]
-      if app not in installed:
-        installed[app] = None
+
+  install_apks = (glob.glob(os.path.join(BASEDIR, "apk/*.apk"))
+                  + glob.glob(os.path.join(BASEDIR, "apk/external/out/*.apk")))
+  for apk in install_apks:
+    app = os.path.basename(apk)[:-4]
+    if app not in installed:
+      installed[app] = None
+
   cloudlog.info("installed apks %s" % (str(installed), ))
 
   for app in installed.iterkeys():
+    
     apk_path = os.path.join(BASEDIR, "apk/"+app+".apk")
-    if os.path.isfile(apk_path):
-      h1 = hashlib.sha1(open(apk_path).read()).hexdigest()
-      h2 = None
-      if installed[app] is not None:
-        h2 = hashlib.sha1(open(installed[app]).read()).hexdigest()
-        cloudlog.info("comparing version of %s  %s vs %s" % (app, h1, h2))
+    if not os.path.exists(apk_path):
+      apk_path = os.path.join(BASEDIR, "apk/external/out/"+app+".apk")
+    if not os.path.exists(apk_path):
+      continue
 
-      if h2 is None or h1 != h2:
-        cloudlog.info("installing %s" % app)
+    h1 = hashlib.sha1(open(apk_path).read()).hexdigest()
+    h2 = None
+    if installed[app] is not None:
+      h2 = hashlib.sha1(open(installed[app]).read()).hexdigest()
+      cloudlog.info("comparing version of %s  %s vs %s" % (app, h1, h2))
 
+    if h2 is None or h1 != h2:
+      cloudlog.info("installing %s" % app)
+
+      success = install_apk(apk_path)
+      if not success:
+        cloudlog.info("needing to uninstall %s" % app)
+        system("pm uninstall %s" % app)
         success = install_apk(apk_path)
-        if not success:
-          cloudlog.info("needing to uninstall %s" % app)
-          system("pm uninstall %s" % app)
-          success = install_apk(apk_path)
 
-        assert success
+      assert success
 
 def manager_update():
   update_apks()
@@ -574,7 +596,7 @@ def uninstall():
   with open('/cache/recovery/command', 'w') as f:
     f.write('--wipe_data\n')
   # IPowerManager.reboot(confirm=false, reason="recovery", wait=true)
-  os.system("service call power 16 i32 0 s16 recovery i32 1")  
+  os.system("service call power 16 i32 0 s16 recovery i32 1")
 
 def main():
   if os.getenv("NOLOG") is not None:

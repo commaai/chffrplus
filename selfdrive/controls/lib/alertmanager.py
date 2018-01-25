@@ -1,5 +1,6 @@
 from cereal import car, log
 from selfdrive.swaglog import cloudlog
+from common.realtime import sec_since_boot
 import copy
 
 
@@ -8,6 +9,7 @@ class Priority:
   HIGH = 3
   MID = 2
   LOW = 1
+  LOWEST = 0
 
 AlertSize = log.Live100Data.AlertSize
 AlertStatus = log.Live100Data.AlertStatus
@@ -36,6 +38,8 @@ class Alert(object):
     self.duration_sound = duration_sound
     self.duration_hud_alert = duration_hud_alert
     self.duration_text = duration_text
+
+    self.start_time = 0.
 
     # typecheck that enums are valid on startup
     tst = car.CarControl.new_message()
@@ -88,19 +92,19 @@ class AlertManager(object):
         "Take Control", 
         "User Distracted", 
         AlertStatus.userPrompt, AlertSize.full,
-        Priority.LOW, "steerRequired", "chimeDouble", .4, 2., 3.),
+        Priority.LOW, "steerRequired", "chimeDouble", .1, .1, .1),
 
     "driverDistracted": Alert(
         "Take Control to Regain Speed", 
         "User Distracted", 
         AlertStatus.critical, AlertSize.full,
-        Priority.LOW, "steerRequired", "chimeRepeated", .5, .5, .5),
+        Priority.MID, "steerRequired", "chimeRepeated", .1, .1, .1),
 
     "startup": Alert(
         "Always Keep Hands on Wheel", 
         "Be Ready to Take Over Any Time", 
         AlertStatus.normal, AlertSize.full,
-        Priority.LOW, None, None, 0., 0., 15.),
+        Priority.LOWEST, None, None, 0., 0., 15.),
 
     "ethicalDilemma": Alert(
         "Take Control Immediately", 
@@ -118,7 +122,7 @@ class AlertManager(object):
         "Take Control",
         "Resume Driving Manually",
         AlertStatus.userPrompt, AlertSize.full,
-        Priority.LOW, None, None, .0, 0., 1.),
+        Priority.LOW, None, None, 0., 0., .2),
 
     # Non-entry only alerts
     "wrongCarModeNoEntry": Alert(
@@ -184,7 +188,7 @@ class AlertManager(object):
 
     "calibrationInvalid": Alert(
         "Take Control Immediately", 
-        "Calibration Invalid: Reposition Neo and Recalibrate", 
+        "Calibration Invalid: Reposition EON and Recalibrate", 
         AlertStatus.critical, AlertSize.full,
         Priority.MID, "steerRequired", "chimeRepeated", 1., 3., 3.),
 
@@ -307,7 +311,7 @@ class AlertManager(object):
 
     "calibrationInvalidNoEntry": Alert(
         "Comma Unavailable", 
-        "Calibration Invalid: Reposition Neo and Recalibrate", 
+        "Calibration Invalid: Reposition EON and Recalibrate", 
         AlertStatus.normal, AlertSize.full,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
 
@@ -359,12 +363,6 @@ class AlertManager(object):
         AlertStatus.normal, AlertSize.full,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
 
-    "controlsMismatchNoEntry": Alert(
-        "Comma Unavailable", 
-        "Controls Mismatch", 
-        AlertStatus.normal, AlertSize.full,
-        Priority.LOW, None, "chimeDouble", .4, 2., 3.),
-
     "commIssueNoEntry": Alert(
         "Comma Unavailable", 
         "CAN Error: Restart the Car", 
@@ -406,34 +404,57 @@ class AlertManager(object):
         "No Close Lead",
         AlertStatus.normal, AlertSize.full,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
+
+    # permanent alerts to display on small UI upper box
+    "steerUnavailablePermanent": Alert(
+        "STEER FAULT", 
+        "RESTART THE CAR",
+        AlertStatus.normal, AlertSize.small,
+        Priority.LOWEST, None, None, 0., 0., .2),
+
+    "brakeUnavailablePermanent": Alert(
+        "BRAKE FAULT", 
+        "RESTART THE CAR",
+        AlertStatus.normal, AlertSize.small,
+        Priority.LOWEST, None, None, 0., 0., .2),
+
+    "lowSpeedLockoutPermanent": Alert(
+        "CRUISE FAULT", 
+        "RESTART THE CAR",
+        AlertStatus.normal, AlertSize.small,
+        Priority.LOWEST, None, None, 0., 0., .2),
   }
 
   def __init__(self):
     self.activealerts = []
-    self.current_alert = None
 
   def alertPresent(self):
     return len(self.activealerts) > 0
 
   def add(self, alert_type, enabled=True, extra_text=''):
     alert_type = str(alert_type)
-    this_alert = copy.copy(self.alerts[alert_type])
-    this_alert.alert_text_2 += extra_text
+    added_alert = copy.copy(self.alerts[alert_type])
+    added_alert.alert_text_2 += extra_text
+    added_alert.start_time = sec_since_boot()
 
     # if new alert is higher priority, log it
-    if self.current_alert is None or this_alert > self.current_alert:
+    if not self.alertPresent() or \
+       added_alert.alert_priority > self.activealerts[0].alert_priority:
       cloudlog.event('alert_add',
                      alert_type=alert_type,
                      enabled=enabled)
 
-    self.activealerts.append(this_alert)
-    self.activealerts.sort()
+    self.activealerts.append(added_alert)
+    self.activealerts.sort(key=lambda k: k.alert_priority, reverse=True)
 
+  # TODO: cycle through alerts?
   def process_alerts(self, cur_time):
-    if self.alertPresent():
-      self.alert_start_time = cur_time
-      self.current_alert = self.activealerts[0]
-      print self.current_alert
+
+    # first get rid of all the expired alerts
+    self.activealerts = [a for a in self.activealerts if a.start_time + 
+                         max(a.duration_sound, a.duration_hud_alert, a.duration_text) > cur_time]
+
+    ca = self.activealerts[0] if self.alertPresent() else None
 
     # start with assuming no alerts
     self.alert_text_1 = ""
@@ -443,24 +464,15 @@ class AlertManager(object):
     self.visual_alert = "none"
     self.audible_alert = "none"
 
-    if self.current_alert is not None:
-      # ewwwww
-      if self.alert_start_time + self.current_alert.duration_sound > cur_time:
-        self.audible_alert = self.current_alert.audible_alert
+    if ca:
+      if ca.start_time + ca.duration_sound > cur_time:
+        self.audible_alert = ca.audible_alert
 
-      if self.alert_start_time + self.current_alert.duration_hud_alert > cur_time:
-        self.visual_alert = self.current_alert.visual_alert
+      if ca.start_time + ca.duration_hud_alert > cur_time:
+        self.visual_alert = ca.visual_alert
 
-      if self.alert_start_time + self.current_alert.duration_text > cur_time:
-        self.alert_text_1 = self.current_alert.alert_text_1
-        self.alert_text_2 = self.current_alert.alert_text_2
-        self.alert_status = self.current_alert.alert_status
-        self.alert_size = self.current_alert.alert_size
-
-      # disable current alert
-      if self.alert_start_time + max(self.current_alert.duration_sound, self.current_alert.duration_hud_alert,
-                                     self.current_alert.duration_text) < cur_time:
-        self.current_alert = None
-
-    # reset
-    self.activealerts = []
+      if ca.start_time + ca.duration_text > cur_time:
+        self.alert_text_1 = ca.alert_text_1
+        self.alert_text_2 = ca.alert_text_2
+        self.alert_status = ca.alert_status
+        self.alert_size = ca.alert_size

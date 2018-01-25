@@ -86,6 +86,7 @@ typedef struct UIScene {
   mat4 extrinsic_matrix;      // Last row is 0 so we can use mat4.
 
   float v_cruise;
+  uint64_t v_cruise_update_ts;
   float v_ego;
   float curvature;
   int engaged;
@@ -99,6 +100,7 @@ typedef struct UIScene {
   uint64_t alert_ts;
   char alert_text1[1024];
   char alert_text2[1024];
+  uint8_t alert_size;
 
   float awareness_status;
 
@@ -107,6 +109,11 @@ typedef struct UIScene {
   // Used to display calibration progress
   int cal_status;
   int cal_perc;
+
+
+  // Used to show gps planner status
+  bool gps_planner_active;
+
 } UIScene;
 
 typedef struct UIState {
@@ -419,6 +426,7 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
       .front_box_width = ui_info.front_box_width,
       .front_box_height = ui_info.front_box_height,
       .world_objects_visible = false,  // Invisible until we receive a calibration message.
+      .gps_planner_active = false,
   };
 
   s->rgb_width = back_bufs.width;
@@ -443,7 +451,9 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
 }
 
 static bool ui_alert_active(UIState *s) {
-  return (nanos_since_boot() - s->scene.alert_ts) < 20000000000ULL && strlen(s->scene.alert_text1) > 0;
+  return (nanos_since_boot() - s->scene.alert_ts) < 20000000000ULL &&
+         strlen(s->scene.alert_text1) > 0 &&
+         s->scene.alert_size == cereal_Live100Data_AlertSize_full;
 }
 
 static void ui_update_frame(UIState *s) {
@@ -549,10 +559,12 @@ static void draw_cross(UIState *s, float x_in, float y_in, float sz, NVGcolor co
   const vec3 p_full_frame = car_space_to_full_frame(s, p_car_space);
 
   // scale with distance
-  sz *= 20;
-  sz /= x_in;
-  if (sz > 25) sz = 25;
-  if (sz < 10) sz = 10;
+  // x_in = 0 -> sz = 30 (max)
+  // x_in = 90 -> sz = 15 (min)
+  sz *= 30;
+  sz /= (x_in / 3 + 30);
+  if (sz > 30) sz = 30;
+  if (sz < 15) sz = 15;
 
   float x = p_full_frame.v[0];
   float y = p_full_frame.v[1];
@@ -832,8 +844,7 @@ static void ui_draw_vision(UIState *s) {
     ui_draw_world(s);
 
     if (scene->lead_status) {
-      // 2.7 m fudge factor
-      draw_cross(s, scene->lead_d_rel + 2.7, scene->lead_y_rel, 25,
+      draw_cross(s, scene->lead_d_rel + 2.7, scene->lead_y_rel, 30,
                    nvgRGBA(255, 0, 0, 128));
     }
 
@@ -856,17 +867,39 @@ static void ui_draw_vision(UIState *s) {
       int x_pos = 500;
       nvgBeginPath(s->vg);
       nvgStrokeWidth(s->vg, 14);
-      nvgRoundedRect(s->vg, (1920-rec_width)/2, 920, rec_width, 150, 20);
+      nvgRoundedRect(s->vg, (1920-rec_width)/2, 920, rec_width, 225, 20);
       nvgStroke(s->vg);
       nvgFillColor(s->vg, nvgRGBA(0,0,0,180));
       nvgFill(s->vg);
 
-      nvgFontSize(s->vg, label_size);
+      nvgFontSize(s->vg, 40*2.5);
       nvgTextAlign(s->vg, NVG_ALIGN_LEFT | NVG_ALIGN_BASELINE);
+      nvgFontFace(s->vg, "sans-semibold");
       nvgFillColor(s->vg, nvgRGBA(255, 255, 255, 220));
-      char calib_status_str[32];
-      snprintf(calib_status_str, sizeof(calib_status_str), "Calibration In Progress: %d%%", scene->cal_perc);
+      char calib_status_str[64];
+      snprintf(calib_status_str, sizeof(calib_status_str), "Calibration in Progress: %d%%", scene->cal_perc);
+
       nvgText(s->vg, x_pos, 1010, calib_status_str, NULL);
+      if (s->is_metric) {
+        nvgText(s->vg, x_pos + 120, 1110, "Drive above 72 km/h", NULL);
+      } else {
+        nvgText(s->vg, x_pos + 120, 1110, "Drive above 45 mph", NULL);
+      }
+    } else if (scene->gps_planner_active) {
+      int rec_width = 1120;
+      int x_pos = 500;
+      nvgBeginPath(s->vg);
+      nvgStrokeWidth(s->vg, 14);
+      nvgRoundedRect(s->vg, (1920-rec_width)/2, 920, rec_width, 225, 20);
+      nvgStroke(s->vg);
+      nvgFillColor(s->vg, nvgRGBA(0,0,0,180));
+      nvgFill(s->vg);
+
+      nvgFontSize(s->vg, 40*2.5);
+      nvgTextAlign(s->vg, NVG_ALIGN_LEFT | NVG_ALIGN_BASELINE);
+      nvgFontFace(s->vg, "sans-semibold");
+      nvgFillColor(s->vg, nvgRGBA(255, 255, 255, 220));
+      nvgText(s->vg, x_pos, 1010, "GPS planner active", NULL);
     }
   }
 
@@ -902,7 +935,6 @@ static void ui_draw_vision(UIState *s) {
     nvgRect(s->vg, message_x, message_y, message_width, message_height);
     nvgFill(s->vg);
 
-
     nvgFillColor(s->vg, nvgRGBA(255, 255, 255, 255));
 
     if (s->passive) {
@@ -934,7 +966,12 @@ static void ui_draw_vision(UIState *s) {
       nvgFontFace(s->vg, "sans-semibold");
       nvgFontSize(s->vg, 48*2.5);
       nvgTextAlign(s->vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
-      if (s->status == STATUS_DISENGAGED) {
+      if (s->scene.alert_size == cereal_Live100Data_AlertSize_small) {
+        nvgFontSize(s->vg, 40*2.5);
+        nvgText(s->vg, message_x+message_width/2, 115, s->scene.alert_text1, NULL);
+        nvgFontSize(s->vg, 26*2.5);
+        nvgText(s->vg, message_x+message_width/2, 185, s->scene.alert_text2, NULL);
+      } else if (s->status == STATUS_DISENGAGED) {
         nvgText(s->vg, message_x+message_width/2, message_y+message_height/2+15, "DISENGAGED", NULL);
       } else if (s->status == STATUS_ENGAGED) {
         nvgText(s->vg, message_x+message_width/2, message_y+message_height/2+15, "ENGAGED", NULL);
@@ -1053,21 +1090,33 @@ static void ui_draw_blank(UIState *s) {
 
 static void ui_draw_aside(UIState *s) {
   char speed_str[32];
+  float speed;
 
-  nvgFillColor(s->vg, nvgRGBA(255, 255, 255, 255));
+  bool is_cruise_set = (s->scene.v_cruise != 0 && s->scene.v_cruise != 255);
+  unsigned long last_cruise_update_dt = (nanos_since_boot() - s->scene.v_cruise_update_ts);
+  bool should_draw_cruise_speed = is_cruise_set && last_cruise_update_dt < 2000000000ULL;
+  if (should_draw_cruise_speed) {
+    speed = s->scene.v_cruise / 3.6;
+    nvgFillColor(s->vg, nvgRGBA(0xFF, 0xD8, 0xAC, 0xFF));
+  } else {
+    speed = s->scene.v_ego;
+    nvgFillColor(s->vg, nvgRGBA(255, 255, 255, 255));
+  }
+
   nvgTextAlign(s->vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
 
   nvgFontFace(s->vg, "sans-semibold");
   nvgFontSize(s->vg, 110);
   if (s->is_metric) {
-    snprintf(speed_str, sizeof(speed_str), "%d", (int)(s->scene.v_ego * 3.6 + 0.5));
+    snprintf(speed_str, sizeof(speed_str), "%d", (int)(speed * 3.6 + 0.5));
   } else {
-    snprintf(speed_str, sizeof(speed_str), "%d", (int)(s->scene.v_ego * 2.237 + 0.5));
+    snprintf(speed_str, sizeof(speed_str), "%d", (int)(speed * 2.2374144 + 0.5));
   }
   nvgText(s->vg, 150, 762, speed_str, NULL);
 
   nvgFontFace(s->vg, "sans-regular");
   nvgFontSize(s->vg, 70);
+
   if (s->is_metric) {
     nvgText(s->vg, 150, 817, "kph", NULL);
   } else {
@@ -1326,10 +1375,14 @@ static void ui_update(UIState *s) {
         struct cereal_Live100Data datad;
         cereal_read_Live100Data(&datad, eventd.live100);
 
+        if (datad.vCruise != s->scene.v_cruise) {
+          s->scene.v_cruise_update_ts = eventd.logMonoTime;
+        }
         s->scene.v_cruise = datad.vCruise;
         s->scene.v_ego = datad.vEgo;
         s->scene.curvature = datad.curvature;
         s->scene.engaged = datad.enabled;
+        s->scene.gps_planner_active = datad.gpsPlannerActive;
         // printf("recv %f\n", datad.vEgo);
 
         s->scene.frontview = datad.rearViewCam;
@@ -1346,6 +1399,8 @@ static void ui_update(UIState *s) {
         s->scene.awareness_status = datad.awarenessStatus;
 
         s->scene.alert_ts = eventd.logMonoTime;
+
+        s->scene.alert_size = datad.alertSize;
 
         if (datad.alertStatus == cereal_Live100Data_AlertStatus_userPrompt) {
           update_status(s, STATUS_WARNING);
@@ -1610,15 +1665,25 @@ int main() {
   #define LIGHT_SENSOR_M 1.3
   #define LIGHT_SENSOR_B 5.0
 
+  #define NEO_BRIGHTNESS 100
+
   float smooth_light_sensor = LIGHT_SENSOR_B;
+
+  const int EON = (access("/EON", F_OK) != -1);
 
   while (!do_exit) {
     pthread_mutex_lock(&s->lock);
 
-    float clipped_light_sensor = (s->light_sensor*LIGHT_SENSOR_M) + LIGHT_SENSOR_B;
-    if (clipped_light_sensor > 255) clipped_light_sensor = 255;
-    smooth_light_sensor = clipped_light_sensor * 0.01 + smooth_light_sensor * 0.99;
-    set_brightness((int)smooth_light_sensor);
+    if (EON) {
+      // light sensor is only exposed on EONs
+      float clipped_light_sensor = (s->light_sensor*LIGHT_SENSOR_M) + LIGHT_SENSOR_B;
+      if (clipped_light_sensor > 255) clipped_light_sensor = 255;
+      smooth_light_sensor = clipped_light_sensor * 0.01 + smooth_light_sensor * 0.99;
+      set_brightness((int)smooth_light_sensor);
+    } else {
+      // compromise for bright and dark envs
+      set_brightness(NEO_BRIGHTNESS);
+    }
 
     ui_update(s);
     if (s->awake) {

@@ -74,9 +74,8 @@ class CarInterface(object):
     tireStiffnessFront_civic = 85400
     tireStiffnessRear_civic = 90000
 
-    stop_and_go = True
     ret.mass = 3045./2.205 + std_cargo
-    ret.wheelbase = 2.70
+    ret.wheelbase = 2.70 if candidate == CAR.PRIUS else 2.65
     ret.centerToFront = ret.wheelbase * 0.44
     ret.steerRatio = 14.5 #Rav4 2017, TODO: find exact value for Prius
     ret.steerKp, ret.steerKi = 0.6, 0.05
@@ -87,9 +86,9 @@ class CarInterface(object):
 
     # min speed to enable ACC. if car can do stop and go, then set enabling speed
     # to a negative value, so it won't matter.
-    if candidate == CAR.PRIUS:
+    if candidate in [CAR.PRIUS, CAR.RAV4H]: # rav4 hybrid can do stop and go
       ret.minEnableSpeed = -1.
-    elif candidate == CAR.RAV4:   # TODO: hack Rav4 to do stop and go
+    elif candidate == CAR.RAV4:   # TODO: hack ICE Rav4 to do stop and go
       ret.minEnableSpeed = 19. * CV.MPH_TO_MS
 
     centerToRear = ret.wheelbase - ret.centerToFront
@@ -134,6 +133,11 @@ class CarInterface(object):
     ret.longitudinalKpV = [3.6, 2.4, 1.5]
     ret.longitudinalKiBP = [0., 35.]
     ret.longitudinalKiV = [0.54, 0.36]
+
+    if candidate == CAR.PRIUS:
+      ret.steerRateCost = 2.
+    elif candidate in [CAR.RAV4, CAR.RAV4H]:
+      ret.steerRateCost = 1.
 
     return ret
 
@@ -185,7 +189,12 @@ class CarInterface(object):
     ret.cruiseState.speed = self.CS.v_cruise_pcm * CV.KPH_TO_MS
     ret.cruiseState.available = bool(self.CS.main_on)
     ret.cruiseState.speedOffset = 0.
-    ret.cruiseState.standstill = self.CS.pcm_acc_status == 7
+    if self.CP.carFingerprint == CAR.RAV4H:
+      # ignore standstill in hybrid rav4, since pcm allows to restart without
+      # receiving any special command
+      ret.cruiseState.standstill = False
+    else:
+      ret.cruiseState.standstill = self.CS.pcm_acc_status == 7  
 
     # TODO: button presses
     buttonEvents = []
@@ -228,8 +237,8 @@ class CarInterface(object):
       events.append(create_event('reverseGear', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE]))
     if self.CS.steer_error:
       events.append(create_event('steerTempUnavailable', [ET.NO_ENTRY, ET.WARNING]))
-    if self.CS.low_speed_lockout:
-      events.append(create_event('lowSpeedLockout', [ET.NO_ENTRY]))
+    if self.CS.low_speed_lockout and self.CP.enableDsu:
+      events.append(create_event('lowSpeedLockout', [ET.NO_ENTRY, ET.PERMANENT]))
     if ret.vEgo < self.CP.minEnableSpeed and self.CP.enableDsu:
       events.append(create_event('speedTooLow', [ET.NO_ENTRY]))
       if c.actuators.gas > 0.1:

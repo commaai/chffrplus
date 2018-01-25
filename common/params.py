@@ -52,6 +52,7 @@ keys = {
   "Version": TxType.PERSISTANT,
   "GitCommit": TxType.PERSISTANT,
   "GitBranch": TxType.PERSISTANT,
+  "GitRemote": TxType.PERSISTANT,
 # written: baseui
 # read:    ui, controls
   "IsMetric": TxType.PERSISTANT,

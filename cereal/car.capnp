@@ -12,12 +12,13 @@ $Java.outerClassname("Car");
 struct CarEvent @0x9b1657f34caf3ad3 {
   name @0 :EventName;
   enable @1 :Bool;
-  preEnable @7 :Bool;
   noEntry @2 :Bool;
   warning @3 :Bool;
   userDisable @4 :Bool;
   softDisable @5 :Bool;
   immediateDisable @6 :Bool;
+  preEnable @7 :Bool;
+  permanent @8 :Bool;
 
   enum EventName @0xbaa8c5d505f727de {
     # TODO: copy from error list
@@ -310,4 +311,5 @@ struct CarParams {
   directAccelControl @31 :Bool; # Does the car have direct accel control or just gas/brake
   stoppingControl @34 :Bool; # Does the car allows full control even at lows speeds when stopping
   startAccel @35 :Float32; # Required acceleraton to overcome creep braking
+  steerRateCost @40 :Float32; # Lateral MPC cost on steering rate
 }

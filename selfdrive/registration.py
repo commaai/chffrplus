@@ -19,11 +19,15 @@ def get_git_commit():
 def get_git_branch():
   return subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).strip()
 
+def get_git_remote():
+  return subprocess.check_output(["git", "config", "--get", "remote.origin.url"]).strip()
+
 def register():
   params = Params()
   params.put("Version", version)
   params.put("GitCommit", get_git_commit())
   params.put("GitBranch", get_git_branch())
+  params.put("GitRemote", get_git_remote())
 
   dongle_id, access_token = params.get("DongleId"), params.get("AccessToken")
 

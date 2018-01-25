@@ -28,7 +28,7 @@ typedef struct {
 	double delta[N];
 } log_t;
 
-void init(){
+void init(double steerRateCost){
   acado_initializeSolver();
   int    i;
 
@@ -52,7 +52,7 @@ void init(){
     acadoVariables.W[25 * i + 6] = 1.0 * f;
     acadoVariables.W[25 * i + 12] = 1.0 * f;
     acadoVariables.W[25 * i + 18] = 1.0 * f;
-    acadoVariables.W[25 * i + 24] = 2.0 * f;
+    acadoVariables.W[25 * i + 24] = steerRateCost * f;
   }
   acadoVariables.WN[0] = 1.0;
   acadoVariables.WN[5] = 1.0;

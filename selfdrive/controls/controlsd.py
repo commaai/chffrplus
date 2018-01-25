@@ -99,7 +99,7 @@ def data_sample(CI, CC, thermal, calibration, health, poller, cal_status, overte
   if hh is not None:
     controls_allowed = hh.health.controlsAllowed
     if not controls_allowed:
-      events.append(create_event('controlsMismatch', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE]))
+      events.append(create_event('controlsMismatch', [ET.IMMEDIATE_DISABLE]))
 
   return CS, events, cal_status, overtemp, free_space
 
@@ -127,6 +127,7 @@ def state_transition(CS, CP, state, events, soft_disable_timer, v_cruise_kph, AM
 
   # handle button presses. TODO: this should be in state_control, but a decelCruise press
   # would have the effect of both enabling and changing speed is checked after the state transition
+  v_cruise_kph_last = v_cruise_kph
   for b in CS.buttonEvents:
     if not CP.enableCruise and enabled and not b.pressed:
       if b.type == "accelCruise":
@@ -144,11 +145,10 @@ def state_transition(CS, CP, state, events, soft_disable_timer, v_cruise_kph, AM
   # DISABLED
   if state == State.disabled:
     if get_events(events, [ET.ENABLE]):
-      if get_events(events, [ET.NO_ENTRY, ET.SOFT_DISABLE, ET.IMMEDIATE_DISABLE]):
-        for e in get_events(events, [ET.SOFT_DISABLE, ET.IMMEDIATE_DISABLE]):
-          AM.add(e, enabled)
+      if get_events(events, [ET.NO_ENTRY]):
         for e in get_events(events, [ET.NO_ENTRY]):
           AM.add(str(e) + "NoEntry", enabled)
+
       else:
         if get_events(events, [ET.PRE_ENABLE]):
           state = State.preEnabled
@@ -207,11 +207,11 @@ def state_transition(CS, CP, state, events, soft_disable_timer, v_cruise_kph, AM
     elif not get_events(events, [ET.PRE_ENABLE]):
       state = State.enabled
 
-  return state, soft_disable_timer, v_cruise_kph
+  return state, soft_disable_timer, v_cruise_kph, v_cruise_kph_last
 
 
-def state_control(plan, CS, CP, state, events, v_cruise_kph, AM, rk, awareness_status,
-                  PL, LaC, LoC, VM, angle_offset, rear_view_allowed, rear_view_toggle):
+def state_control(plan, CS, CP, state, events, v_cruise_kph, v_cruise_kph_last, AM, rk,
+                  awareness_status, PL, LaC, LoC, VM, angle_offset, rear_view_allowed, rear_view_toggle):
   # Given the state, this function returns the actuators
 
   # reset actuators to zero
@@ -221,9 +221,6 @@ def state_control(plan, CS, CP, state, events, v_cruise_kph, AM, rk, awareness_s
   active = isActive(state)
 
   for b in CS.buttonEvents:
-    # any button event resets awarenesss_status
-    awareness_status = 1.
-
     # button presses for rear view
     if b.type == "leftBlinker" or b.type == "rightBlinker":
       if b.pressed and rear_view_allowed:
@@ -243,23 +240,19 @@ def state_control(plan, CS, CP, state, events, v_cruise_kph, AM, rk, awareness_s
 
   # DISABLED
   if state in [State.preEnabled, State.disabled]:
-    awareness_status = 1.
+
     LaC.reset()
     LoC.reset(v_pid=CS.vEgo)
 
   # ENABLED or SOFT_DISABLING
   elif state in [State.enabled, State.softDisabling]:
 
-    if CS.steeringPressed:
-      # reset awareness status on steering
-      awareness_status = 1.0
-
-    # 6 minutes driver you're on
+    # decrease awareness status
     awareness_status -= 0.01/(AWARENESS_TIME)
     if awareness_status <= 0.:
       AM.add("driverDistracted", enabled)
     elif awareness_status <= AWARENESS_PRE_TIME / AWARENESS_TIME and \
-         awareness_status >= (AWARENESS_PRE_TIME - 0.1) / AWARENESS_TIME:
+         awareness_status >= (AWARENESS_PRE_TIME - 4.) / AWARENESS_TIME:
       AM.add("preDriverDistracted", enabled)
 
     # parse warnings from car specific interface
@@ -289,6 +282,17 @@ def state_control(plan, CS, CP, state, events, v_cruise_kph, AM, rk, awareness_s
 
   if CP.enableCruise and CS.cruiseState.enabled:
     v_cruise_kph = CS.cruiseState.speed * CV.MS_TO_KPH
+
+  # reset conditions for the 6 minutes timout
+  if CS.buttonEvents or \
+     v_cruise_kph != v_cruise_kph_last or \
+     CS.steeringPressed or \
+     state in [State.preEnabled, State.disabled]:
+    awareness_status = 1.
+
+  # parse permanent warnings to display constantly
+  for e in get_events(events, [ET.PERMANENT]):
+    AM.add(str(e) + "Permanent", enabled)
 
   # *** process alerts ***
 
@@ -382,6 +386,9 @@ def data_send(plan, plan_ts, CS, CI, CP, VM, state, events, actuators, v_cruise_
 
   # log learned angle offset
   dat.live100.angleOffset = float(angle_offset)
+
+  # Save GPS planner status
+  dat.live100.gpsPlannerActive = plan.gpsPlannerActive
 
   # lag
   dat.live100.cumLagMs = -rk.remaining*1000.
@@ -478,6 +485,7 @@ def controlsd_thread(gctx, rate=100):
 
   # 0.0 - 1.0
   awareness_status = 1.
+  v_cruise_kph_last = 0
 
   rk = Ratekeeper(rate, print_delay_threshold=2./1000)
 
@@ -508,13 +516,14 @@ def controlsd_thread(gctx, rate=100):
 
     if not passive:
       # update control state
-      state, soft_disable_timer, v_cruise_kph = state_transition(CS, CP, state, events, soft_disable_timer, v_cruise_kph, AM)
+      state, soft_disable_timer, v_cruise_kph, v_cruise_kph_last = state_transition(CS, CP, state, events, soft_disable_timer,
+                                                                                    v_cruise_kph, AM)
       prof.checkpoint("State transition")
 
     # compute actuators
     actuators, v_cruise_kph, awareness_status, angle_offset, rear_view_toggle = state_control(plan, CS, CP, state, events, v_cruise_kph,
-                                                                            AM, rk, awareness_status, PL, LaC, LoC, VM, angle_offset,
-                                                                            rear_view_allowed, rear_view_toggle)
+                                                                            v_cruise_kph_last, AM, rk, awareness_status, PL, LaC, LoC, VM,
+                                                                            angle_offset, rear_view_allowed, rear_view_toggle)
     prof.checkpoint("State Control")
 
     # publish data

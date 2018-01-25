@@ -21,7 +21,7 @@ typedef struct {
     double delta[20];
 } log_t;
 
-void init();
+void init(double steer_rate_cost);
 int run_mpc(state_t * x0, log_t * solution,
              double l_poly[4], double r_poly[4], double p_poly[4],
              double l_prob, double r_prob, double p_prob, double curvature_factor, double v_ref, double lane_width);

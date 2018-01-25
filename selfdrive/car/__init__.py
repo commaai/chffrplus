@@ -28,6 +28,7 @@ interfaces = {
   "HONDA CR-V 2016 TOURING": HondaInterface,
   "TOYOTA PRIUS 2017": ToyotaInterface,
   "TOYOTA RAV4 2017": ToyotaInterface,
+  "TOYOTA RAV4 2017 HYBRID": ToyotaInterface,
 
   "simulator": SimInterface,
   "simulator2": Sim2Interface,
