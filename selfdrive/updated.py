@@ -9,6 +9,7 @@ import subprocess
 from common.basedir import BASEDIR
 from selfdrive.swaglog import cloudlog
 
+NICE_LOW_PRIORITY = ["nice", "-n", "19"]
 def main(gctx=None):
   while True:
     # try network
@@ -17,17 +18,19 @@ def main(gctx=None):
       time.sleep(60)
       continue
 
-    r = subprocess.call(["nice", "-n", "19", "git", "fetch", "--depth=1"])
+    # download application update
+    r = subprocess.call(NICE_LOW_PRIORITY + ["git", "fetch"])
     cloudlog.info("git fetch: %r", r)
     if r:
       time.sleep(60)
       continue
 
     # download apks
-    r = subprocess.call(["nice", "-n", "19", os.path.join(BASEDIR, "apk/external/patcher.py"), "download"])
+    r = subprocess.call(NICE_LOW_PRIORITY + [os.path.join(BASEDIR, "apk/external/patcher.py"), "download"])
     cloudlog.info("patcher download: %r", r)
 
     time.sleep(60*60*3)
 
 if __name__ == "__main__":
-    main()
+  main()
+

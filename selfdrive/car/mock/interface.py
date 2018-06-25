@@ -1,14 +1,9 @@
 #!/usr/bin/env python
-import os
-import time
 import zmq
-from common.realtime import sec_since_boot
-import common.numpy_fast as np
 from cereal import car
 from selfdrive.config import Conversions as CV
 from selfdrive.services import service_list
 import selfdrive.messaging as messaging
-from selfdrive.controls.lib.drive_helpers import EventTypes as ET, create_event
 
 # mocked car interface to work with chffrplus
 TS = 0.01  # 100Hz
@@ -30,6 +25,7 @@ class CarInterface(object):
     self.gps = messaging.sub_sock(context, service_list['gpsLocation'].port)
 
     self.speed = 0.
+    self.prev_speed = 0.
     self.yaw_rate = 0.
     self.yaw_rate_meas = 0.
 
@@ -47,7 +43,6 @@ class CarInterface(object):
     ret = car.CarParams.new_message()
 
     ret.carName = "mock"
-    ret.radarName = "mock"
     ret.carFingerprint = candidate
 
     ret.safetyModel = car.CarParams.SafetyModels.noOutput
@@ -76,6 +71,7 @@ class CarInterface(object):
     ret.longitudinalKpV = [0.]
     ret.longitudinalKiBP = [0.]
     ret.longitudinalKiV = [0.]
+    ret.steerActuatorDelay = 0.
 
     return ret
 
@@ -91,6 +87,7 @@ class CarInterface(object):
 
     gps = messaging.recv_sock(self.gps)
     if gps is not None:
+      self.prev_speed = self.speed
       self.speed = gps.gpsLocation.speed
 
     # create message
@@ -99,7 +96,11 @@ class CarInterface(object):
     # speeds
     ret.vEgo = self.speed
     ret.vEgoRaw = self.speed
-    ret.aEgo = 0.
+    a = self.speed - self.prev_speed
+
+    ret.aEgo = a
+    ret.brakePressed = a < -0.5
+
     self.yawRate = LPG * self.yaw_rate_meas + (1. - LPG) * self.yaw_rate
     ret.yawRate = self.yaw_rate
     ret.standstill = self.speed < 0.01
@@ -111,7 +112,6 @@ class CarInterface(object):
     ret.steeringAngle = curvature * self.CP.steerRatio * self.CP.wheelbase * CV.RAD_TO_DEG
 
     events = []
-    #events.append(create_event('passive', [ET.NO_ENTRY, ET.IMMEDIATE_DISABLE]))
     ret.events = events
 
     return ret.as_reader()

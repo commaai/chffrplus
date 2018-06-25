@@ -1,9 +1,8 @@
-import os
 import json
 import subprocess
 
 from selfdrive.swaglog import cloudlog
-from selfdrive.version import version
+from selfdrive.version import version, training_version
 from common.api import api_get
 from common.params import Params
 
@@ -25,6 +24,7 @@ def get_git_remote():
 def register():
   params = Params()
   params.put("Version", version)
+  params.put("TrainingVersion", training_version)
   params.put("GitCommit", get_git_commit())
   params.put("GitBranch", get_git_branch())
   params.put("GitRemote", get_git_remote())

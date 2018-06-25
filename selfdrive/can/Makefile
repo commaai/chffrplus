@@ -28,6 +28,7 @@ else ifeq ($(UNAME_M),x86_64)
 else ifeq ($(UNAME_M),aarch64)
 	ZMQ_FLAGS = -I$(PHONELIBS)/zmq/aarch64/include
 	ZMQ_LIBS = -L$(PHONELIBS)/zmq/aarch64/lib -l:libzmq.a
+	CXXFLAGS += -lgnustl_shared
 endif
 
 OPENDBC_PATH := $(shell python -c 'import opendbc; print opendbc.DBC_PATH')
@@ -65,3 +66,5 @@ dbc_out/%.cc: $(OPENDBC_PATH)/%.dbc process_dbc.py dbc_template.cc
 clean:
 	rm -rf libdbc.so*
 	rm -f dbc_out/*.cc
+	rm -f dbcs.txt
+	rm -f dbcs.csv

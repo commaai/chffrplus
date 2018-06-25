@@ -57,13 +57,13 @@ void usb_cb_enumeration_complete();
 // ********************* UART *********************
 // IRQs: USART1, USART2, USART3, UART5
 
-#define FIFO_SIZE 0x100
+#define FIFO_SIZE 0x400
 typedef struct uart_ring {
-  uint8_t w_ptr_tx;
-  uint8_t r_ptr_tx;
+  uint16_t w_ptr_tx;
+  uint16_t r_ptr_tx;
   uint8_t elems_tx[FIFO_SIZE];
-  uint8_t w_ptr_rx;
-  uint8_t r_ptr_rx;
+  uint16_t w_ptr_rx;
+  uint16_t r_ptr_rx;
   uint8_t elems_rx[FIFO_SIZE];
   USART_TypeDef *uart;
   void (*callback)(struct uart_ring*);
@@ -88,7 +88,7 @@ uint32_t adc_get(int channel);
 // ********************* DAC *********************
 
 void dac_init();
-uint32_t dac_set(int channel, uint32_t value);
+void dac_set(int channel, uint32_t value);
 
 
 // ********************* TIMER *********************

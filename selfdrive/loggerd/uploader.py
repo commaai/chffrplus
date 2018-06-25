@@ -69,8 +69,12 @@ def clear_locks(root):
 
 def is_on_wifi():
   # ConnectivityManager.getActiveNetworkInfo()
-  result = subprocess.check_output(["service", "call", "connectivity", "2"]).strip().split("\n")
-  data = ''.join(''.join(w.decode("hex")[::-1] for w in l[14:49].split()) for l in result[1:]) 
+  try:
+    result = subprocess.check_output(["service", "call", "connectivity", "2"]).strip().split("\n")
+  except subprocess.CalledProcessError:
+    return False
+
+  data = ''.join(''.join(w.decode("hex")[::-1] for w in l[14:49].split()) for l in result[1:])
 
   return "\x00".join("WIFI") in data
 
@@ -126,26 +130,28 @@ class Uploader(object):
         return (key, fn, 0)
 
     if with_video:
-      # then upload compressed camera file
+      # then upload compressed rear and front camera files
       for name, key, fn in self.gen_upload_files():
-        if name in ["fcamera.hevc"]:
+        if name == "fcamera.hevc":
           return (key, fn, 1)
+        elif name == "dcamera.hevc":
+          return (key, fn, 2)
 
       # then upload other files
       for name, key, fn in self.gen_upload_files():
         if not name.endswith('.lock') and not name.endswith(".tmp"):
-          return (key, fn, 1)
+          return (key, fn, 3)
 
     return None
 
 
   def do_upload(self, key, fn):
     try:
-      url_resp = api_get("v1.1/"+self.dongle_id+"/upload_url/", timeout=2, path=key, access_token=self.access_token)
+      url_resp = api_get("v1.2/"+self.dongle_id+"/upload_url/", timeout=2, path=key, access_token=self.access_token)
       url_resp_json = json.loads(url_resp.text)
       url = url_resp_json['url']
       headers = url_resp_json['headers']
-      cloudlog.info("upload_url v1.1 %s %s", url, str(headers))
+      cloudlog.info("upload_url v1.2 %s %s", url, str(headers))
 
       if fake_upload:
         cloudlog.info("*** WARNING, THIS IS A FAKE UPLOAD TO %s ***" % url)
@@ -155,7 +161,7 @@ class Uploader(object):
         self.last_resp = FakeResponse()
       else:
         with open(fn, "rb") as f:
-          self.last_resp = requests.put(url, data=f, headers=headers)
+          self.last_resp = requests.put(url, data=f, headers=headers, timeout=10)
     except Exception as e:
       self.last_exc = (e, traceback.format_exc())
       raise
@@ -248,33 +254,34 @@ def uploader_fn(exit_event):
 
   uploader = Uploader(dongle_id, access_token, ROOT)
 
+  backoff = 0.1
   while True:
 
-    upload_video = (params.get("IsUploadVideoOverCellularEnabled") != "0") or is_on_wifi()
+    should_upload = (params.get("IsUploadVideoOverCellularEnabled") != "0") or is_on_wifi()
 
-    backoff = 0.1
-    while True:
+    if exit_event.is_set():
+      return
 
-      if exit_event.is_set():
-        return
+    if not should_upload:
+      time.sleep(5)
+      continue
 
-      d = uploader.next_file_to_upload(upload_video)
-      if d is None:
-        break
+    d = uploader.next_file_to_upload(with_video=True)
+    if d is None:
+      time.sleep(5)
+      continue
 
-      key, fn, _ = d
+    key, fn, _ = d
 
-      cloudlog.info("to upload %r", d)
-      success = uploader.upload(key, fn)
-      if success:
-        backoff = 0.1
-      else:
-        cloudlog.info("backoff %r", backoff)
-        time.sleep(backoff + random.uniform(0, backoff))
-        backoff = min(backoff*2, 120)
-      cloudlog.info("upload done, success=%r", success)
-
-    time.sleep(5)
+    cloudlog.info("to upload %r", d)
+    success = uploader.upload(key, fn)
+    if success:
+      backoff = 0.1
+    else:
+      cloudlog.info("backoff %r", backoff)
+      time.sleep(backoff + random.uniform(0, backoff))
+      backoff = min(backoff*2, 120)
+    cloudlog.info("upload done, success=%r", success)
 
 def main(gctx=None):
   uploader_fn(threading.Event())

@@ -27,8 +27,12 @@ static int elm327_tx_lin_hook(int lin_num, uint8_t *data, int len) {
   return true;
 }
 
-static void elm327_init() {
+static void elm327_init(int16_t param) {
   controls_allowed = 1;
+}
+
+static int elm327_fwd_hook(int bus_num, CAN_FIFOMailBox_TypeDef *to_fwd) {
+  return -1;
 }
 
 const safety_hooks elm327_hooks = {
@@ -36,4 +40,6 @@ const safety_hooks elm327_hooks = {
   .rx = elm327_rx_hook,
   .tx = elm327_tx_hook,
   .tx_lin = elm327_tx_lin_hook,
+  .ignition = default_ign_hook,
+  .fwd = elm327_fwd_hook,
 };

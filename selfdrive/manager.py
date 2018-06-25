@@ -1,15 +1,28 @@
 #!/usr/bin/env python2.7
-
 import os
 import sys
-import time
 import fcntl
 import errno
 import signal
+import subprocess
+
+from common.basedir import BASEDIR
+sys.path.append(os.path.join(BASEDIR, "pyextra"))
+os.environ['BASEDIR'] = BASEDIR
 
 if __name__ == "__main__":
   if os.path.isfile("/init.qcom.rc") \
-      and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 4):
+      and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 6):
+
+    # update continue.sh before updating NEOS
+    if os.path.isfile(os.path.join(BASEDIR, "scripts", "continue.sh")):
+      from shutil import copyfile
+      copyfile(os.path.join(BASEDIR, "scripts", "continue.sh"), "/data/data/com.termux/files/continue.sh")
+
+    # run the updater
+    print "Starting NEOS updater"
+    subprocess.check_call(["git", "clean", "-xdf"], cwd=BASEDIR)
+    os.system(os.path.join(BASEDIR, "installer", "updater", "updater"))
     raise Exception("NEOS outdated")
 
   # get a non-blocking stdout
@@ -49,14 +62,13 @@ import subprocess
 import traceback
 from multiprocessing import Process
 
-from common.basedir import BASEDIR
-sys.path.append(os.path.join(BASEDIR, "pyextra"))
-os.environ['BASEDIR'] = BASEDIR
+EON = os.path.exists("/EON")
+if EON and os.path.exists(os.path.join(BASEDIR, "vpn")):
+  print "installing vpn"
+  os.system(os.path.join(BASEDIR, "vpn", "install.sh"))
 
-import usb1
 import zmq
-from setproctitle import setproctitle
-from smbus2 import SMBus
+from setproctitle import setproctitle  #pylint: disable=no-name-in-module
 
 from common.params import Params
 from common.realtime import sec_since_boot
@@ -66,18 +78,19 @@ from selfdrive.swaglog import cloudlog
 import selfdrive.messaging as messaging
 from selfdrive.thermal import read_thermal
 from selfdrive.registration import register
-from selfdrive.version import version
+from selfdrive.version import version, dirty, training_version
 import selfdrive.crash as crash
 
 from selfdrive.loggerd.config import ROOT
 
-EON = os.path.exists("/EON")
 
 # comment out anything you don't want to run
 managed_processes = {
   "uploader": "selfdrive.loggerd.uploader",
   "controlsd": "selfdrive.controls.controlsd",
   "radard": "selfdrive.controls.radard",
+  "ubloxd": "selfdrive.locationd.ubloxd",
+  "locationd_dummy": "selfdrive.locationd.locationd_dummy",
   "loggerd": ("selfdrive/loggerd", ["./loggerd"]),
   "logmessaged": "selfdrive.logmessaged",
   "tombstoned": "selfdrive.tombstoned",
@@ -89,6 +102,7 @@ managed_processes = {
   "visiond": ("selfdrive/visiond", ["./visiond"]),
   "sensord": ("selfdrive/sensord", ["./sensord"]),
   "gpsd": ("selfdrive/sensord", ["./gpsd"]),
+  #"orbd": ("selfdrive/orbd", ["./orbd_wrapper.sh"]),
   "updated": "selfdrive.updated",
   #"gpsplanner": "selfdrive.controls.gps_plannerd",
 }
@@ -110,6 +124,8 @@ persistent_processes = [
   'uploader',
   'ui',
   'gpsd',
+  'ubloxd',
+  'locationd_dummy',
   'updated',
 ]
 
@@ -120,6 +136,7 @@ car_started_processes = [
   'radard',
   'visiond',
   'proclogd',
+  'orbd',
   # 'gpsplanner,
 ]
 
@@ -234,31 +251,29 @@ def cleanup_all_processes(signal, frame):
 
 # ****************** run loop ******************
 
-def manager_init():
+def manager_init(should_register=True):
   global gctx
 
-  reg_res = register()
-  if reg_res:
-    dongle_id, dongle_secret = reg_res
+  if should_register:
+    reg_res = register()
+    if reg_res:
+      dongle_id, dongle_secret = reg_res
+    else:
+      raise Exception("server registration failed")
   else:
-    raise Exception("server registration failed")
+    dongle_id = "c"*16
 
   # set dongle id
   cloudlog.info("dongle id is " + dongle_id)
   os.environ['DONGLE_ID'] = dongle_id
 
-  if "-private" in subprocess.check_output(["git", "config", "--get", "remote.origin.url"]):
-    upstream = "origin/master"
-  else:
-    upstream = "origin/release"
-  dirty = subprocess.call(["git", "diff-index", "--quiet", upstream, "--"]) != 0
   cloudlog.info("dirty is %d" % dirty)
   if not dirty:
     os.environ['CLEAN'] = '1'
 
-  cloudlog.bind_global(dongle_id=dongle_id, version=version, dirty=dirty)
+  cloudlog.bind_global(dongle_id=dongle_id, version=version, dirty=dirty, is_eon=EON)
   crash.bind_user(id=dongle_id)
-  crash.bind_extra(version=version, dirty=dirty)
+  crash.bind_extra(version=version, dirty=dirty, is_eon=EON)
 
   os.umask(0)
   try:
@@ -279,31 +294,45 @@ def system(cmd):
       output=e.output[-1024:],
       returncode=e.returncode)
 
+LEON = False
 def setup_eon_fan():
+  global LEON
+
   if not EON:
     return
 
   os.system("echo 2 > /sys/module/dwc3_msm/parameters/otg_switch")
 
+  from smbus2 import SMBus
   bus = SMBus(7, force=True)
-  bus.write_byte_data(0x21, 0x10, 0xf)   # mask all interrupts
-  bus.write_byte_data(0x21, 0x03, 0x1)   # set drive current and global interrupt disable
-  bus.write_byte_data(0x21, 0x02, 0x2)   # needed?
-  bus.write_byte_data(0x21, 0x04, 0x4)   # manual override source
+  try:
+    bus.write_byte_data(0x21, 0x10, 0xf)   # mask all interrupts
+    bus.write_byte_data(0x21, 0x03, 0x1)   # set drive current and global interrupt disable
+    bus.write_byte_data(0x21, 0x02, 0x2)   # needed?
+    bus.write_byte_data(0x21, 0x04, 0x4)   # manual override source
+  except IOError:
+    print "LEON detected"
+    #os.system("echo 1 > /sys/devices/soc/6a00000.ssusb/power_supply/usb/usb_otg")
+    LEON = True
   bus.close()
 
 last_eon_fan_val = None
 def set_eon_fan(val):
-  global last_eon_fan_val
+  global LEON, last_eon_fan_val
 
   if not EON:
     return
 
+  from smbus2 import SMBus
   if last_eon_fan_val is None or last_eon_fan_val != val:
     bus = SMBus(7, force=True)
-    bus.write_byte_data(0x21, 0x04, 0x2)
-    bus.write_byte_data(0x21, 0x03, (val*2)+1)
-    bus.write_byte_data(0x21, 0x04, 0x4)
+    if LEON:
+      i = [0x1, 0x3 | 0, 0x3 | 0x08, 0x3 | 0x10][val]
+      bus.write_i2c_block_data(0x3d, 0, [i])
+    else:
+      bus.write_byte_data(0x21, 0x04, 0x2)
+      bus.write_byte_data(0x21, 0x03, (val*2)+1)
+      bus.write_byte_data(0x21, 0x04, 0x4)
     bus.close()
     last_eon_fan_val = val
 
@@ -390,15 +419,16 @@ def manager_thread():
 
   params = Params()
 
-  passive = params.get("Passive") == "1"
   passive_starter = LocationStarter()
 
   started_ts = None
+  off_ts = None
   logger_dead = False
   count = 0
   fan_speed = 0
   ignition_seen = False
-  battery_was_high = False
+  started_seen = False
+  panda_seen = False
 
   health_sock.RCVTIMEO = 1500
 
@@ -454,32 +484,44 @@ def manager_thread():
     ignition = td is not None and td.health.started
     ignition_seen = ignition_seen or ignition
 
+    # add voltage check for ignition
+    if not ignition_seen and td is not None and td.health.voltage > 13500:
+      ignition = True
+
     do_uninstall = params.get("DoUninstall") == "1"
     accepted_terms = params.get("HasAcceptedTerms") == "1"
+    completed_training = params.get("CompletedTrainingVersion") == training_version
 
     should_start = ignition
 
-    # start on gps in passive mode
-    if passive and not ignition_seen:
-      should_start = should_start or passive_starter.update(started_ts, location)
+    # have we seen a panda?
+    panda_seen = panda_seen or td is not None
 
-    # with 2% left, we killall, otherwise the phone is bricked
+    # start on gps movement if we haven't seen ignition and are in passive mode
+    should_start = should_start or (not (ignition_seen and td) # seen ignition and panda is connected
+                                    and params.get("Passive") == "1"
+                                    and passive_starter.update(started_ts, location))
+
+    # with 2% left, we killall, otherwise the phone will take a long time to boot
     should_start = should_start and avail > 0.02
 
     # require usb power
     should_start = should_start and msg.thermal.usbOnline
 
-    should_start = should_start and accepted_terms and (not do_uninstall)
+    should_start = should_start and accepted_terms and completed_training and (not do_uninstall)
 
-    # if any CPU gets above 107 or the battery gets above 53, kill all processes
-    # controls will warn with CPU above 95 or battery above 50
-    if max_temp > 107.0 or msg.thermal.bat >= 53000:
+    # if any CPU gets above 107 or the battery gets above 63, kill all processes
+    # controls will warn with CPU above 95 or battery above 60
+    if max_temp > 107.0 or msg.thermal.bat >= 63000:
+      # TODO: Add a better warning when this is happening
       should_start = False
 
     if should_start:
-      if not started_ts:
+      off_ts = None
+      if started_ts is None:
         params.car_start()
         started_ts = sec_since_boot()
+        started_seen = True
       for p in car_started_processes:
         if p == "loggerd" and logger_dead:
           kill_managed_process(p)
@@ -487,15 +529,17 @@ def manager_thread():
           start_managed_process(p)
     else:
       started_ts = None
+      if off_ts is None:
+        off_ts = sec_since_boot()
       logger_dead = False
       for p in car_started_processes:
         kill_managed_process(p)
 
-      # shutdown if the battery gets lower than 5%, we aren't running, and we are discharging
-      if msg.thermal.batteryPercent < 5 and msg.thermal.batteryStatus == "Discharging" and battery_was_high:
+      # shutdown if the battery gets lower than 3%, t's discharging, we aren't running for
+      # more than a minute but we were running
+      if msg.thermal.batteryPercent < 3 and msg.thermal.batteryStatus == "Discharging" and \
+         started_seen and (sec_since_boot() - off_ts) > 60:
         os.system('LD_LIBRARY_PATH="" svc power shutdown')
-      if msg.thermal.batteryPercent > 10:
-        battery_was_high = True
 
     # check the status of all processes, did any of them die?
     for p in running:
@@ -507,6 +551,7 @@ def manager_thread():
         running=running.keys(),
         count=count,
         health=(td.to_dict() if td else None),
+        location=(location.to_dict() if location else None),
         thermal=msg.to_dict())
 
     if do_uninstall:
@@ -554,7 +599,7 @@ def update_apks():
   cloudlog.info("installed apks %s" % (str(installed), ))
 
   for app in installed.iterkeys():
-    
+
     apk_path = os.path.join(BASEDIR, "apk/"+app+".apk")
     if not os.path.exists(apk_path):
       apk_path = os.path.join(BASEDIR, "apk/external/out/"+app+".apk")
@@ -599,6 +644,9 @@ def uninstall():
   os.system("service call power 16 i32 0 s16 recovery i32 1")
 
 def main():
+  # the flippening!
+  os.system('LD_LIBRARY_PATH="" content insert --uri content://settings/system --bind name:s:user_rotation --bind value:i:1')
+
   if os.getenv("NOLOG") is not None:
     del managed_processes['loggerd']
     del managed_processes['tombstoned']
@@ -617,6 +665,13 @@ def main():
     del managed_processes['controlsd']
     del managed_processes['radard']
 
+  # disable this until we use it
+  """
+  if os.path.isfile('logserver/logserver.py'):
+    managed_processes["logserver"] = "selfdrive.logserver.wsgi"
+    persistent_processes.append("logserver")
+  """
+
   # support additional internal only extensions
   try:
     import selfdrive.manager_extensions
@@ -630,6 +685,8 @@ def main():
   # set unset params
   if params.get("IsMetric") is None:
     params.put("IsMetric", "0")
+  if params.get("RecordFront") is None:
+    params.put("RecordFront", "0")
   if params.get("IsRearViewMirror") is None:
     params.put("IsRearViewMirror", "0")
   if params.get("IsFcwEnabled") is None:
@@ -639,13 +696,19 @@ def main():
   if params.get("IsUploadVideoOverCellularEnabled") is None:
     params.put("IsUploadVideoOverCellularEnabled", "1")
 
-  params.put("Passive", "1" if os.getenv("PASSIVE") else "0")
+  # is this chffrplus?
+  if os.getenv("PASSIVE") is not None:
+    params.put("Passive", str(int(os.getenv("PASSIVE"))))
+
+  if params.get("Passive") is None:
+    raise Exception("Passive must be set to continue")
 
   # put something on screen while we set things up
   if os.getenv("PREPAREONLY") is not None:
     spinner_proc = None
   else:
-    spinner_proc = subprocess.Popen(["./spinner", "loading..."],
+    spinner_text = "chffrplus" if params.get("Passive")=="1" else "openpilot"
+    spinner_proc = subprocess.Popen(["./spinner", "loading %s"%spinner_text],
       cwd=os.path.join(BASEDIR, "selfdrive", "ui", "spinner"),
       close_fds=True)
   try:
