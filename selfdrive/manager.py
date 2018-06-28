@@ -508,7 +508,7 @@ def manager_thread():
     # require usb power
     should_start = should_start and msg.thermal.usbOnline
 
-    should_start = should_start and accepted_terms and completed_training and (not do_uninstall)
+    should_start = should_start and accepted_terms and (params.get("Passive") == "1" or completed_training) and (not do_uninstall)
 
     # if any CPU gets above 107 or the battery gets above 63, kill all processes
     # controls will warn with CPU above 95 or battery above 60
