@@ -4,12 +4,12 @@
 #include <unistd.h>
 #include <assert.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 
 #include <cutils/properties.h>
 
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>
-#include <EGL/eglext.h>
 
 #include <json.h>
 #include <czmq.h>
@@ -28,6 +28,7 @@
 #include "common/touch.h"
 #include "common/framebuffer.h"
 #include "common/visionipc.h"
+#include "common/visionimg.h"
 #include "common/modeldata.h"
 #include "common/params.h"
 
@@ -64,6 +65,8 @@ const int box_w = vwp_w-sbr_w-(bdr_s*2);
 const int box_h = vwp_h-(bdr_s*2);
 const int viz_w = vwp_w-(bdr_s*2);
 const int header_h = 420;
+const int footer_h = 280;
+const int footer_y = vwp_h-bdr_s-footer_h;
 
 const uint8_t bg_colors[][4] = {
   [STATUS_STOPPED] = {0x07, 0x23, 0x39, 0xff},
@@ -88,10 +91,16 @@ const int alert_sizes[] = {
   [ALERTSIZE_FULL] = vwp_h,
 };
 
+// TODO: this is also hardcoded in common/transformations/camera.py
+const mat3 intrinsic_matrix = (mat3){{
+  910., 0., 582.,
+  0., 910., 437.,
+  0.,   0.,   1.
+}};
+
 typedef struct UIScene {
   int frontview;
-
-  uint8_t *bgr_ptr;
+  int fullview;
 
   int transformed_width, transformed_height;
 
@@ -110,6 +119,8 @@ typedef struct UIScene {
   float v_ego;
   float curvature;
   int engaged;
+  bool engageable;
+  bool monitoring_active;
 
   bool uilayout_sidebarcollapsed;
   bool uilayout_mapenabled;
@@ -121,13 +132,13 @@ typedef struct UIScene {
   int lead_status;
   float lead_d_rel, lead_y_rel, lead_v_rel;
 
-  uint8_t *bgr_front_ptr;
   int front_box_x, front_box_y, front_box_width, front_box_height;
 
   uint64_t alert_ts;
   char alert_text1[1024];
   char alert_text2[1024];
   uint8_t alert_size;
+  float alert_blinkingrate;
 
   float awareness_status;
 
@@ -158,6 +169,7 @@ typedef struct UIState {
   int font_sans_semibold;
   int font_sans_bold;
   int img_wheel;
+  int img_face;
 
   zsock_t *thermal_sock;
   void *thermal_sock_raw;
@@ -190,8 +202,9 @@ typedef struct UIState {
   int cur_vision_front_idx;
 
   GLuint frame_program;
+  GLuint frame_texs[UI_BUF_COUNT];
+  GLuint frame_front_texs[UI_BUF_COUNT];
 
-  GLuint frame_tex;
   GLint frame_pos_loc, frame_texcoord_loc;
   GLint frame_texture_loc, frame_transform_loc;
 
@@ -199,14 +212,12 @@ typedef struct UIState {
   GLint line_pos_loc, line_color_loc;
   GLint line_transform_loc;
 
-  unsigned int rgb_width, rgb_height;
+  unsigned int rgb_width, rgb_height, rgb_stride;
+  size_t rgb_buf_len;
   mat4 rgb_transform;
 
-  unsigned int rgb_front_width, rgb_front_height;
-  GLuint frame_front_tex;
-
-  bool intrinsic_matrix_loaded;
-  mat3 intrinsic_matrix;
+  unsigned int rgb_front_width, rgb_front_height, rgb_front_stride;
+  size_t rgb_front_buf_len;
 
   UIScene scene;
 
@@ -217,6 +228,8 @@ typedef struct UIState {
   bool is_metric;
   bool passive;
   int alert_size;
+  float alert_blinking_alpha;
+  bool alert_blinked;
 
   float light_sensor;
 } UIState;
@@ -310,6 +323,14 @@ static const mat4 frame_transform = {{
                                            0.0, 0.0, 0.0, 1.0,
 }};
 
+// frame from 4/3 to 16/9 display
+static const mat4 full_to_wide_frame_transform = {{
+  .75,  0.0, 0.0, 0.0,
+  0.0,  1.0, 0.0, 0.0,
+  0.0,  0.0, 1.0, 0.0,
+  0.0,  0.0, 0.0, 1.0,
+}};
+
 static void ui_init(UIState *s) {
   memset(s, 0, sizeof(UIState));
 
@@ -375,6 +396,9 @@ static void ui_init(UIState *s) {
   assert(s->img_wheel >= 0);
   s->img_wheel = nvgCreateImage(s->vg, "../assets/img_chffr_wheel.png", 1);
 
+  assert(s->img_face >= 0);
+  s->img_face = nvgCreateImage(s->vg, "../assets/img_driver_face.png", 1);
+
   // init gl
   s->frame_program = load_program(frame_vertex_shader, frame_fragment_shader);
   assert(s->frame_program);
@@ -408,37 +432,6 @@ static void ui_init(UIState *s) {
   }
 }
 
-// If the intrinsics are in the params entry, this copies them to
-// intrinsic_matrix and returns true.  Otherwise returns false.
-static bool try_load_intrinsics(mat3 *intrinsic_matrix) {
-  char *value;
-  const int result = read_db_value(NULL, "CloudCalibration", &value, NULL);
-
-  if (result == 0) {
-    JsonNode* calibration_json = json_decode(value);
-    free(value);
-
-    JsonNode *intrinsic_json =
-        json_find_member(calibration_json, "intrinsic_matrix");
-
-    if (intrinsic_json == NULL || intrinsic_json->tag != JSON_ARRAY) {
-      json_delete(calibration_json);
-      return false;
-    }
-
-    int i = 0;
-    JsonNode* json_num;
-    json_foreach(json_num, intrinsic_json) {
-      intrinsic_matrix->v[i++] = json_num->number_;
-    }
-    json_delete(calibration_json);
-
-    return true;
-  } else {
-    return false;
-  }
-}
-
 static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
                            int num_back_fds, const int *back_fds,
                            const VisionStreamBufs front_bufs, int num_front_fds,
@@ -456,6 +449,7 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
 
   s->scene = (UIScene){
       .frontview = getenv("FRONTVIEW") != NULL,
+      .fullview = getenv("FULLVIEW") != NULL,
       .cal_status = CALIBRATION_CALIBRATED,
       .transformed_width = ui_info.transformed_width,
       .transformed_height = ui_info.transformed_height,
@@ -469,9 +463,13 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
 
   s->rgb_width = back_bufs.width;
   s->rgb_height = back_bufs.height;
+  s->rgb_stride = back_bufs.stride;
+  s->rgb_buf_len = back_bufs.buf_len;
 
   s->rgb_front_width = front_bufs.width;
   s->rgb_front_height = front_bufs.height;
+  s->rgb_front_stride = front_bufs.stride;
+  s->rgb_front_buf_len = front_bufs.buf_len;
 
   s->rgb_transform = (mat4){{
     2.0/s->rgb_width, 0.0, 0.0, -1.0,
@@ -486,30 +484,6 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
     s->is_metric = value[0] == '1';
     free(value);
   }
-}
-
-static void ui_update_frame(UIState *s) {
-  assert(glGetError() == GL_NO_ERROR);
-
-  UIScene *scene = &s->scene;
-
-  if (scene->frontview && scene->bgr_front_ptr) {
-    // load front frame texture
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s->frame_front_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                    s->rgb_front_width, s->rgb_front_height,
-                    GL_RGB, GL_UNSIGNED_BYTE, scene->bgr_front_ptr);
-  } else if (!scene->frontview && scene->bgr_ptr) {
-    // load frame texture
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s->frame_tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                    s->rgb_width, s->rgb_height,
-                    GL_RGB, GL_UNSIGNED_BYTE, scene->bgr_ptr);
-  }
-
-  assert(glGetError() == GL_NO_ERROR);
 }
 
 static void ui_draw_transformed_box(UIState *s, uint32_t color) {
@@ -560,7 +534,7 @@ vec3 car_space_to_full_frame(const UIState *s, vec4 car_space_projective) {
 
   // The last entry is zero because of how we store E (to use matvecmul).
   const vec3 Ep = {{Ep4.v[0], Ep4.v[1], Ep4.v[2]}};
-  const vec3 KEp = matvecmul3(s->intrinsic_matrix, Ep);
+  const vec3 KEp = matvecmul3(intrinsic_matrix, Ep);
 
   // Project.
   const vec3 p_image = {{KEp.v[0] / KEp.v[2], KEp.v[1] / KEp.v[2], 1.}};
@@ -782,21 +756,25 @@ static void draw_steering(UIState *s, float curvature) {
 static void draw_frame(UIState *s) {
   const UIScene *scene = &s->scene;
 
-  mat4 out_mat;
   float x1, x2, y1, y2;
   if (s->scene.frontview) {
-    out_mat = device_transform; // full 16/9
     // flip horizontally so it looks like a mirror
-    x1 = (float)scene->front_box_x / s->rgb_front_width;
-    x2 = (float)(scene->front_box_x + scene->front_box_width) / s->rgb_front_width;
-    y2 = (float)scene->front_box_y / s->rgb_front_height;
-    y1 = (float)(scene->front_box_y + scene->front_box_height) / s->rgb_front_height;
+    x1 = 0.0;
+    x2 = 1.0;
+    y1 = 1.0;
+    y2 = 0.0;
   } else {
-    out_mat = matmul(device_transform, frame_transform);
     x1 = 1.0;
     x2 = 0.0;
     y1 = 1.0;
     y2 = 0.0;
+  }
+
+  mat4 out_mat;
+  if (s->scene.frontview || s->scene.fullview) {
+    out_mat = matmul(device_transform, full_to_wide_frame_transform);
+  } else {
+    out_mat = matmul(device_transform, frame_transform);
   }
 
   const uint8_t frame_indicies[] = {0, 1, 2, 0, 2, 3};
@@ -808,10 +786,10 @@ static void draw_frame(UIState *s) {
   };
 
   glActiveTexture(GL_TEXTURE0);
-  if (s->scene.frontview) {
-    glBindTexture(GL_TEXTURE_2D, s->frame_front_tex);
-  } else {
-    glBindTexture(GL_TEXTURE_2D, s->frame_tex);
+  if (s->scene.frontview && s->cur_vision_front_idx >= 0) {
+    glBindTexture(GL_TEXTURE_2D, s->frame_front_texs[s->cur_vision_front_idx]);
+  } else if (!scene->frontview && s->cur_vision_idx >= 0) {
+    glBindTexture(GL_TEXTURE_2D, s->frame_texs[s->cur_vision_idx]);
   }
 
   glUseProgram(s->frame_program);
@@ -939,7 +917,7 @@ static void ui_draw_vision_speed(UIState *s) {
   if (s->is_metric) {
     snprintf(speed_str, sizeof(speed_str), "%d", (int)(speed * 3.6 + 0.5));
   } else {
-    snprintf(speed_str, sizeof(speed_str), "%d", (int)(speed * 2.2374144 + 0.5));
+    snprintf(speed_str, sizeof(speed_str), "%d", (int)(speed * 2.2369363 + 0.5));
   }
   nvgFontFace(s->vg, "sans-bold");
   nvgFontSize(s->vg, 96*2.5);
@@ -972,16 +950,19 @@ static void ui_draw_vision_wheel(UIState *s) {
   const int img_wheel_size = bg_wheel_size*1.5;
   const int img_wheel_x = bg_wheel_x-(img_wheel_size/2);
   const int img_wheel_y = bg_wheel_y-25;
-  float img_wheel_alpha = 0.5f;
+  float img_wheel_alpha = 0.1f;
   bool is_engaged = (s->status == STATUS_ENGAGED);
   bool is_warning = (s->status == STATUS_WARNING);
-  if (is_engaged || is_warning) {
+  bool is_engageable = scene->engageable;
+  if (is_engaged || is_warning || is_engageable) {
     nvgBeginPath(s->vg);
     nvgCircle(s->vg, bg_wheel_x, (bg_wheel_y + (bdr_s*1.5)), bg_wheel_size);
     if (is_engaged) {
       nvgFillColor(s->vg, nvgRGBA(23, 134, 68, 255));
     } else if (is_warning) {
       nvgFillColor(s->vg, nvgRGBA(218, 111, 37, 255));
+    } else if (is_engageable) {
+      nvgFillColor(s->vg, nvgRGBA(23, 51, 73, 255));
     }
     nvgFill(s->vg);
     img_wheel_alpha = 1.0f;
@@ -991,6 +972,31 @@ static void ui_draw_vision_wheel(UIState *s) {
     img_wheel_size, img_wheel_size, 0, s->img_wheel, img_wheel_alpha);
   nvgRect(s->vg, img_wheel_x, img_wheel_y, img_wheel_size, img_wheel_size);
   nvgFillPaint(s->vg, imgPaint);
+  nvgFill(s->vg);
+}
+
+static void ui_draw_vision_face(UIState *s) {
+  const UIScene *scene = &s->scene;
+  const int face_size = 96;
+  const int face_x = (scene->ui_viz_rx + face_size + (bdr_s * 2));
+  const int face_y = (footer_y + ((footer_h - face_size) / 2));
+  const int face_img_size = (face_size * 1.5);
+  const int face_img_x = (face_x - (face_img_size / 2));
+  const int face_img_y = (face_y - (face_size / 4));
+  float face_img_alpha = scene->monitoring_active ? 1.0f : 0.15f;
+  float face_bg_alpha = scene->monitoring_active ? 0.3f : 0.1f;
+  NVGcolor face_bg = nvgRGBA(0, 0, 0, (255 * face_bg_alpha));
+  NVGpaint face_img = nvgImagePattern(s->vg, face_img_x, face_img_y,
+    face_img_size, face_img_size, 0, s->img_face, face_img_alpha);
+
+  nvgBeginPath(s->vg);
+  nvgCircle(s->vg, face_x, (face_y + (bdr_s * 1.5)), face_size);
+  nvgFillColor(s->vg, face_bg);
+  nvgFill(s->vg);
+
+  nvgBeginPath(s->vg);
+  nvgRect(s->vg, face_img_x, face_img_y, face_img_size, face_img_size);
+  nvgFillPaint(s->vg, face_img);
   nvgFill(s->vg);
 }
 
@@ -1013,6 +1019,18 @@ static void ui_draw_vision_header(UIState *s) {
   ui_draw_vision_wheel(s);
 }
 
+static void ui_draw_vision_footer(UIState *s) {
+  const UIScene *scene = &s->scene;
+  int ui_viz_rx = scene->ui_viz_rx;
+  int ui_viz_rw = scene->ui_viz_rw;
+
+  nvgBeginPath(s->vg);
+  nvgRect(s->vg, ui_viz_rx, footer_y, ui_viz_rw, footer_h);
+
+  // Driver Monitoring
+  ui_draw_vision_face(s);
+}
+
 static void ui_draw_vision_alert(UIState *s, int va_size, int va_color,
                                   const char* va_text1, const char* va_text2) {
   const UIScene *scene = &s->scene;
@@ -1031,7 +1049,7 @@ static void ui_draw_vision_alert(UIState *s, int va_size, int va_color,
 
   nvgBeginPath(s->vg);
   nvgRect(s->vg, alr_x, alr_y, alr_w, alr_h);
-  nvgFillColor(s->vg, nvgRGBA(color[0],color[1],color[2],color[3]));
+  nvgFillColor(s->vg, nvgRGBA(color[0],color[1],color[2],(color[3]*s->alert_blinking_alpha)));
   nvgFill(s->vg);
 
   nvgBeginPath(s->vg);
@@ -1072,7 +1090,7 @@ static void ui_draw_calibration_status(UIState *s) {
   char calib_str1[64];
   char calib_str2[64];
   snprintf(calib_str1, sizeof(calib_str1), "Calibration in Progress: %d%%", scene->cal_perc);
-  snprintf(calib_str2, sizeof(calib_str2), (s->is_metric?"Drive above 72 km/h":"Drive above 45 mph"));
+  snprintf(calib_str2, sizeof(calib_str2), (s->is_metric?"Drive above 35 km/h":"Drive above 15 mph"));
 
   ui_draw_vision_alert(s, ALERTSIZE_MID, s->status, calib_str1, calib_str2);
 }
@@ -1106,7 +1124,7 @@ static void ui_draw_vision(UIState *s) {
   nvgScissor(s->vg, ui_viz_rx, box_y, ui_viz_rw, box_h);
   nvgTranslate(s->vg, ui_viz_rx+ui_viz_ro, box_y + (box_h-inner_height)/2.0);
   nvgScale(s->vg, (float)viz_w / s->fb_w, (float)inner_height / s->fb_h);
-  if (!scene->frontview) {
+  if (!scene->frontview && !scene->fullview) {
     ui_draw_world(s);
   }
 
@@ -1122,7 +1140,10 @@ static void ui_draw_vision(UIState *s) {
   } else if (scene->cal_status == CALIBRATION_UNCALIBRATED) {
     // Calibration Status
     ui_draw_calibration_status(s);
+  } else {
+    ui_draw_vision_footer(s);
   }
+
 
   nvgEndFrame(s->vg);
   glDisable(GL_BLEND);
@@ -1151,7 +1172,6 @@ static void ui_draw(UIState *s) {
     glDisable(GL_BLEND);
   }
 
-  eglSwapBuffers(s->display, s->surface);
   assert(glGetError() == GL_NO_ERROR);
 }
 
@@ -1203,39 +1223,57 @@ static void update_status(UIState *s, int status) {
 static void ui_update(UIState *s) {
   int err;
 
-  if (!s->intrinsic_matrix_loaded) {
-    s->intrinsic_matrix_loaded = try_load_intrinsics(&s->intrinsic_matrix);
-  }
-
   if (s->vision_connect_firstrun) {
     // cant run this in connector thread because opengl.
     // do this here for now in lieu of a run_on_main_thread event
 
-    // setup frame texture
-    glDeleteTextures(1, &s->frame_tex); //silently ignores a 0 texture
-    glGenTextures(1, &s->frame_tex);
-    glBindTexture(GL_TEXTURE_2D, s->frame_tex);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, s->rgb_width, s->rgb_height);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    for (int i=0; i<UI_BUF_COUNT; i++) {
+      glDeleteTextures(1, &s->frame_texs[i]);
 
-    // BGR
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+      VisionImg img = {
+        .fd = s->bufs[i].fd,
+        .format = VISIONIMG_FORMAT_RGB24,
+        .width = s->rgb_width,
+        .height = s->rgb_height,
+        .stride = s->rgb_stride,
+        .bpp = 3,
+        .size = s->rgb_buf_len,
+      };
+      s->frame_texs[i] = visionimg_to_gl(&img);
 
-    // front
-    glDeleteTextures(1, &s->frame_front_tex);
-    glGenTextures(1, &s->frame_front_tex);
-    glBindTexture(GL_TEXTURE_2D, s->frame_front_tex);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, s->rgb_front_width, s->rgb_front_height);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glBindTexture(GL_TEXTURE_2D, s->frame_texs[i]);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
-    // BGR
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+      // BGR
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+    }
+
+    for (int i=0; i<UI_BUF_COUNT; i++) {
+      glDeleteTextures(1, &s->frame_front_texs[i]);
+
+      VisionImg img = {
+        .fd = s->front_bufs[i].fd,
+        .format = VISIONIMG_FORMAT_RGB24,
+        .width = s->rgb_front_width,
+        .height = s->rgb_front_height,
+        .stride = s->rgb_front_stride,
+        .bpp = 3,
+        .size = s->rgb_front_buf_len,
+      };
+      s->frame_front_texs[i] = visionimg_to_gl(&img);
+
+      glBindTexture(GL_TEXTURE_2D, s->frame_front_texs[i]);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+      // BGR
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+    }
 
     assert(glGetError() == GL_NO_ERROR);
 
@@ -1245,6 +1283,9 @@ static void ui_update(UIState *s) {
     s->scene.ui_viz_ro = 0;
 
     s->vision_connect_firstrun = false;
+
+    s->alert_blinking_alpha = 1.0;
+    s->alert_blinked = false;
   }
 
   // poll for events
@@ -1302,7 +1343,7 @@ static void ui_update(UIState *s) {
         continue;
       }
       if (rp.type == VIPC_STREAM_ACQUIRE) {
-        bool front = rp.d.stream_acq.type == VISION_STREAM_UI_FRONT;
+        bool front = rp.d.stream_acq.type == VISION_STREAM_RGB_FRONT;
         int idx = rp.d.stream_acq.idx;
 
         int release_idx;
@@ -1325,17 +1366,11 @@ static void ui_update(UIState *s) {
         if (front) {
           assert(idx < UI_BUF_COUNT);
           s->cur_vision_front_idx = idx;
-          s->scene.bgr_front_ptr = s->front_bufs[idx].addr;
         } else {
           assert(idx < UI_BUF_COUNT);
           s->cur_vision_idx = idx;
-          s->scene.bgr_ptr = s->bufs[idx].addr;
           // printf("v %d\n", ((uint8_t*)s->bufs[idx].addr)[0]);
         }
-        if (front == s->scene.frontview) {
-          ui_update_frame(s);
-        }
-
       } else {
         assert(false);
       }
@@ -1392,7 +1427,9 @@ static void ui_update(UIState *s) {
         s->scene.v_ego = datad.vEgo;
         s->scene.curvature = datad.curvature;
         s->scene.engaged = datad.enabled;
+        s->scene.engageable = datad.engageable;
         s->scene.gps_planner_active = datad.gpsPlannerActive;
+        s->scene.monitoring_active = datad.driverMonitoringOn;
         // printf("recv %f\n", datad.vEgo);
 
         s->scene.frontview = datad.rearViewCam;
@@ -1431,6 +1468,24 @@ static void ui_update(UIState *s) {
           update_status(s, STATUS_DISENGAGED);
         }
 
+        s->scene.alert_blinkingrate = datad.alertBlinkingRate;
+        if (datad.alertBlinkingRate > 0.) {
+          if (s->alert_blinked) {
+            if (s->alert_blinking_alpha > 0.0 && s->alert_blinking_alpha < 1.0) {
+              s->alert_blinking_alpha += (0.05*datad.alertBlinkingRate);
+            } else {
+              s->alert_blinked = false;
+            }
+          } else {
+            if (s->alert_blinking_alpha > 0.25) {
+              s->alert_blinking_alpha -= (0.05*datad.alertBlinkingRate);
+            } else {
+              s->alert_blinking_alpha += 0.25;
+              s->alert_blinked = true;
+            }
+          }
+        }
+
       } else if (eventd.which == cereal_Event_live20) {
         struct cereal_Live20Data datad;
         cereal_read_Live20Data(&datad, eventd.live20);
@@ -1441,7 +1496,7 @@ static void ui_update(UIState *s) {
         s->scene.lead_y_rel = leaddatad.yRel;
         s->scene.lead_v_rel = leaddatad.vRel;
       } else if (eventd.which == cereal_Event_liveCalibration) {
-        s->scene.world_objects_visible = s->intrinsic_matrix_loaded;
+        s->scene.world_objects_visible = true;
         struct cereal_LiveCalibrationData datad;
         cereal_read_LiveCalibrationData(&datad, eventd.liveCalibration);
 
@@ -1570,8 +1625,8 @@ static void* vision_connect_thread(void *args) {
     if (fd < 0) continue;
 
     VisionPacket back_rp, front_rp;
-    if (!vision_subscribe(fd, &back_rp, VISION_STREAM_UI_BACK)) continue;
-    if (!vision_subscribe(fd, &front_rp, VISION_STREAM_UI_FRONT)) continue;
+    if (!vision_subscribe(fd, &back_rp, VISION_STREAM_RGB_BACK)) continue;
+    if (!vision_subscribe(fd, &front_rp, VISION_STREAM_RGB_FRONT)) continue;
 
     pthread_mutex_lock(&s->lock);
     assert(!s->vision_connected);
@@ -1610,12 +1665,6 @@ static void* light_sensor_thread(void *args) {
 
   int SENSOR_LIGHT = 7;
 
-  struct stat buffer;
-  if (stat("/sys/bus/i2c/drivers/cyccg", &buffer) == 0) {
-    LOGD("LeEco light sensor detected");
-    SENSOR_LIGHT = 5;
-  }
-
   device->activate(device, SENSOR_LIGHT, 0);
   device->activate(device, SENSOR_LIGHT, 1);
   device->setDelay(device, SENSOR_LIGHT, ms2ns(100));
@@ -1629,9 +1678,7 @@ static void* light_sensor_thread(void *args) {
       LOG_100("light_sensor_poll failed: %d", n);
     }
     if (n > 0) {
-      if (SENSOR_LIGHT == 5) s->light_sensor = buffer[0].light * 2;
-      else s->light_sensor = buffer[0].light;
-      //printf("new light sensor value: %f\n", s->light_sensor);
+      s->light_sensor = buffer[0].light;
     }
   }
 
@@ -1649,36 +1696,48 @@ static void* bg_thread(void* args) {
                               &bg_display, &bg_surface, NULL, NULL);
   assert(bg_fb);
 
-  bool first = true;
+  int bg_status = -1;
   while(!do_exit) {
     pthread_mutex_lock(&s->lock);
-
-    if (first) {
-      first = false;
-    } else {
+    if (bg_status == s->status) {
+      // will always be signaled if it changes?
       pthread_cond_wait(&s->bg_cond, &s->lock);
     }
-
-    assert(s->status < ARRAYSIZE(bg_colors));
-    const uint8_t *color = bg_colors[s->status];
-
+    bg_status = s->status;
     pthread_mutex_unlock(&s->lock);
+
+    assert(bg_status < ARRAYSIZE(bg_colors));
+    const uint8_t *color = bg_colors[bg_status];
 
     glClearColor(color[0]/256.0, color[1]/256.0, color[2]/256.0, 0.0);
     glClear(GL_COLOR_BUFFER_BIT);
 
-
     eglSwapBuffers(bg_display, bg_surface);
     assert(glGetError() == GL_NO_ERROR);
-
   }
 
   return NULL;
 }
 
+int is_leon() {
+  #define MAXCHAR 1000
+  FILE *fp;
+  char str[MAXCHAR];
+  char* filename = "/proc/cmdline";
+
+  fp = fopen(filename, "r");
+  if (fp == NULL){
+    printf("Could not open file %s",filename);
+    return 0;
+  }
+  fgets(str, MAXCHAR, fp);
+  fclose(fp);
+  return strstr(str, "letv") != NULL;
+}
 
 int main() {
   int err;
+  setpriority(PRIO_PROCESS, 0, -14);
 
   zsys_handler_set(NULL);
   signal(SIGINT, (sighandler_t)set_do_exit);
@@ -1706,38 +1765,36 @@ int main() {
   touch_init(&touch);
 
   // light sensor scaling params
-  #define LIGHT_SENSOR_M 1.3
-  #define LIGHT_SENSOR_B 5.0
+  const int EON = (access("/EON", F_OK) != -1);
+  const int LEON = is_leon();
 
+  const float BRIGHTNESS_B = LEON? 10.0 : 5.0;
+  const float BRIGHTNESS_M = LEON? 2.6 : 1.3;
   #define NEO_BRIGHTNESS 100
 
-  float smooth_light_sensor = LIGHT_SENSOR_B;
-
-  const int EON = (access("/EON", F_OK) != -1);
+  float smooth_brightness = BRIGHTNESS_B;
 
   while (!do_exit) {
+    bool should_swap = false;
     pthread_mutex_lock(&s->lock);
 
     if (EON) {
       // light sensor is only exposed on EONs
 
-      float clipped_light_sensor = (s->light_sensor*LIGHT_SENSOR_M) + LIGHT_SENSOR_B;
-      if (clipped_light_sensor > 255) clipped_light_sensor = 255;
-      smooth_light_sensor = clipped_light_sensor * 0.01 + smooth_light_sensor * 0.99;
-      set_brightness(s, (int)smooth_light_sensor);
+      float clipped_brightness = (s->light_sensor*BRIGHTNESS_M) + BRIGHTNESS_B;
+      if (clipped_brightness > 255) clipped_brightness = 255;
+      smooth_brightness = clipped_brightness * 0.01 + smooth_brightness * 0.99;
+      set_brightness(s, (int)smooth_brightness);
     } else {
       // compromise for bright and dark envs
       set_brightness(s, NEO_BRIGHTNESS);
     }
 
     ui_update(s);
-    if (s->awake) {
-      ui_draw(s);
-    }
 
     // awake on any touch
     int touch_x = -1, touch_y = -1;
-    int touched = touch_poll(&touch, &touch_x, &touch_y);
+    int touched = touch_poll(&touch, &touch_x, &touch_y, s->awake ? 0 : 100);
     if (touched == 1) {
       // touch event will still happen :(
       set_awake(s, true);
@@ -1750,10 +1807,19 @@ int main() {
       set_awake(s, false);
     }
 
+    if (s->awake) {
+      ui_draw(s);
+      glFinish();
+      should_swap = true;
+    }
+
     pthread_mutex_unlock(&s->lock);
 
-    // no simple way to do 30fps vsync with surfaceflinger...
-    usleep(30000);
+    // the bg thread needs to be scheduled, so the main thread needs time without the lock
+    // safe to do this outside the lock?
+    if (should_swap) {
+      eglSwapBuffers(s->display, s->surface);
+    }
   }
 
   set_awake(s, true);

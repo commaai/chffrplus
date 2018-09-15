@@ -6,21 +6,6 @@ import numpy as np
 
 WHEEL_RADIUS = 0.33
 
-def parse_gear_shifter(can_gear, car_fingerprint):
-  # TODO: Use values from DBC to parse this field
-  if can_gear == 0x0:
-    return "park"
-  elif can_gear == 0x1:
-    return "reverse"
-  elif can_gear == 0x2:
-    return "neutral"
-  elif can_gear == 0x3:
-    return "drive"
-  elif can_gear == 0x4:
-    return "brake"
-  return "unknown"
-
-
 def get_can_parser(CP):
 
   signals = [
@@ -80,7 +65,7 @@ class CarState(object):
     self.v_wheel_fr = cp.vl["WheelSpeed_CG1"]['WhlRl_W_Meas'] * WHEEL_RADIUS
     self.v_wheel_rl = cp.vl["WheelSpeed_CG1"]['WhlFr_W_Meas'] * WHEEL_RADIUS
     self.v_wheel_rr = cp.vl["WheelSpeed_CG1"]['WhlFl_W_Meas'] * WHEEL_RADIUS
-    self.v_wheel = (self.v_wheel_fl + self.v_wheel_fr + self.v_wheel_rl + self.v_wheel_rr) / 4.
+    self.v_wheel = float(np.mean([self.v_wheel_fl, self.v_wheel_fr, self.v_wheel_rl, self.v_wheel_rr]))
 
     # Kalman filter
     if abs(self.v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed

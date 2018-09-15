@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 from common.realtime import sec_since_boot
-from cereal import car
+from cereal import car, log
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import EventTypes as ET, create_event
 from selfdrive.controls.lib.vehicle_model import VehicleModel
 from selfdrive.car.toyota.carstate import CarState, get_can_parser
 from selfdrive.car.toyota.values import ECU, check_ecu_msgs, CAR
+from selfdrive.swaglog import cloudlog
 
 try:
   from selfdrive.car.toyota.carcontroller import CarController
@@ -65,8 +66,8 @@ class CarInterface(object):
     centerToFront_civic = wheelbase_civic * 0.4
     centerToRear_civic = wheelbase_civic - centerToFront_civic
     rotationalInertia_civic = 2500
-    tireStiffnessFront_civic = 85400
-    tireStiffnessRear_civic = 90000
+    tireStiffnessFront_civic = 192150
+    tireStiffnessRear_civic = 202500
 
     ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
     ret.steerActuatorDelay = 0.12  # Default delay, Prius has larger delay
@@ -74,39 +75,69 @@ class CarInterface(object):
     if candidate == CAR.PRIUS:
       ret.safetyParam = 66  # see conversion factor for STEER_TORQUE_EPS in dbc file
       ret.wheelbase = 2.70
-      ret.steerRatio = 15.0
+      ret.steerRatio = 15.00   # unknown end-to-end spec
+      tire_stiffness_factor = 0.6371   # hand-tune
       ret.mass = 3045 * CV.LB_TO_KG + std_cargo
       ret.steerKpV, ret.steerKiV = [[0.4], [0.01]]
       ret.steerKf = 0.00006   # full torque for 10 deg at 80mph means 0.00007818594
-
-      f = 1.43353663
-      tireStiffnessFront_civic *= f
-      tireStiffnessRear_civic *= f
-
-      # Prius has a very bad actuator
+      # TODO: Prius seem to have very laggy actuators. Understand if it is lag or hysteresis
       ret.steerActuatorDelay = 0.25
+
     elif candidate in [CAR.RAV4, CAR.RAV4H]:
       ret.safetyParam = 73  # see conversion factor for STEER_TORQUE_EPS in dbc file
       ret.wheelbase = 2.65
-      ret.steerRatio = 14.5 # Rav4 2017
+      ret.steerRatio = 16.30   # 14.5 is spec end-to-end
+      tire_stiffness_factor = 0.5533
       ret.mass = 3650 * CV.LB_TO_KG + std_cargo  # mean between normal and hybrid
       ret.steerKpV, ret.steerKiV = [[0.6], [0.05]]
       ret.steerKf = 0.00006   # full torque for 10 deg at 80mph means 0.00007818594
+
     elif candidate == CAR.COROLLA:
       ret.safetyParam = 100 # see conversion factor for STEER_TORQUE_EPS in dbc file
       ret.wheelbase = 2.70
       ret.steerRatio = 17.8
+      tire_stiffness_factor = 0.444
       ret.mass = 2860 * CV.LB_TO_KG + std_cargo  # mean between normal and hybrid
       ret.steerKpV, ret.steerKiV = [[0.2], [0.05]]
       ret.steerKf = 0.00003   # full torque for 20 deg at 80mph means 0.00007818594
+
     elif candidate == CAR.LEXUS_RXH:
       ret.safetyParam = 100 # see conversion factor for STEER_TORQUE_EPS in dbc file
       ret.wheelbase = 2.79
-      ret.steerRatio = 16.  # official specs say 14.8, but it does not seem right
+      ret.steerRatio = 16.  # 14.8 is spec end-to-end
+      tire_stiffness_factor = 0.444  # not optimized yet
       ret.mass = 4481 * CV.LB_TO_KG + std_cargo  # mean between min and max
       ret.steerKpV, ret.steerKiV = [[0.6], [0.1]]
       ret.steerKf = 0.00006   # full torque for 10 deg at 80mph means 0.00007818594
 
+    elif candidate in [CAR.CHR, CAR.CHRH]:
+      ret.safetyParam = 100
+      ret.wheelbase = 2.63906
+      ret.steerRatio = 13.6
+      tire_stiffness_factor = 0.7933
+      ret.mass = 3300. * CV.LB_TO_KG + std_cargo
+      ret.steerKpV, ret.steerKiV = [[0.723], [0.0428]]
+      ret.steerKf = 0.00006
+
+    elif candidate in [CAR.CAMRY, CAR.CAMRYH]:
+      ret.safetyParam = 100
+      ret.wheelbase = 2.82448
+      ret.steerRatio = 13.7
+      tire_stiffness_factor = 0.7933
+      ret.mass = 3400 * CV.LB_TO_KG + std_cargo #mean between normal and hybrid
+      ret.steerKpV, ret.steerKiV = [[0.6], [0.1]]
+      ret.steerKf = 0.00006
+
+    elif candidate in [CAR.HIGHLANDER, CAR.HIGHLANDERH]:
+      ret.safetyParam = 100
+      ret.wheelbase = 2.78
+      ret.steerRatio = 16.0
+      tire_stiffness_factor = 0.444 # not optimized yet
+      ret.mass = 4607 * CV.LB_TO_KG + std_cargo #mean between normal and hybrid limited
+      ret.steerKpV, ret.steerKiV = [[0.6], [0.05]]
+      ret.steerKf = 0.00006
+
+    ret.steerRateCost = 1.
     ret.centerToFront = ret.wheelbase * 0.44
 
     ret.longPidDeadzoneBP = [0., 9.]
@@ -114,7 +145,9 @@ class CarInterface(object):
 
     # min speed to enable ACC. if car can do stop and go, then set enabling speed
     # to a negative value, so it won't matter.
-    if candidate in [CAR.PRIUS, CAR.RAV4H, CAR.LEXUS_RXH]: # rav4 hybrid can do stop and go
+    # hybrid models can't do stop and go even though the stock ACC can't
+    if candidate in [CAR.PRIUS, CAR.RAV4H, CAR.LEXUS_RXH, CAR.CHR,
+                     CAR.CHRH, CAR.CAMRY, CAR.CAMRYH, CAR.HIGHLANDERH, CAR.HIGHLANDER]:
       ret.minEnableSpeed = -1.
     elif candidate in [CAR.RAV4, CAR.COROLLA]: # TODO: hack ICE to do stop and go
       ret.minEnableSpeed = 19. * CV.MPH_TO_MS
@@ -127,10 +160,10 @@ class CarInterface(object):
 
     # TODO: start from empirically derived lateral slip stiffness for the civic and scale by
     # mass and CG position, so all cars will have approximately similar dyn behaviors
-    ret.tireStiffnessFront = tireStiffnessFront_civic * \
+    ret.tireStiffnessFront = (tireStiffnessFront_civic * tire_stiffness_factor) * \
                              ret.mass / mass_civic * \
                              (centerToRear / ret.wheelbase) / (centerToRear_civic / wheelbase_civic)
-    ret.tireStiffnessRear = tireStiffnessRear_civic * \
+    ret.tireStiffnessRear = (tireStiffnessRear_civic * tire_stiffness_factor) * \
                             ret.mass / mass_civic * \
                             (ret.centerToFront / ret.wheelbase) / (centerToFront_civic / wheelbase_civic)
 
@@ -146,12 +179,12 @@ class CarInterface(object):
     ret.brakeMaxBP = [5., 20.]
     ret.brakeMaxV = [1., 0.8]
 
-    ret.enableCamera = not check_ecu_msgs(fingerprint, candidate, ECU.CAM)
-    ret.enableDsu = not check_ecu_msgs(fingerprint, candidate, ECU.DSU)
-    ret.enableApgs = False #not check_ecu_msgs(fingerprint, candidate, ECU.APGS)
-    print "ECU Camera Simulated: ", ret.enableCamera
-    print "ECU DSU Simulated: ", ret.enableDsu
-    print "ECU APGS Simulated: ", ret.enableApgs
+    ret.enableCamera = not check_ecu_msgs(fingerprint, ECU.CAM)
+    ret.enableDsu = not check_ecu_msgs(fingerprint, ECU.DSU)
+    ret.enableApgs = False #not check_ecu_msgs(fingerprint, ECU.APGS)
+    cloudlog.warn("ECU Camera Simulated: %r", ret.enableCamera)
+    cloudlog.warn("ECU DSU Simulated: %r", ret.enableDsu)
+    cloudlog.warn("ECU APGS Simulated: %r", ret.enableApgs)
 
     ret.steerLimitAlert = False
     ret.stoppingControl = False
@@ -211,16 +244,14 @@ class CarInterface(object):
     ret.cruiseState.speed = self.CS.v_cruise_pcm * CV.KPH_TO_MS
     ret.cruiseState.available = bool(self.CS.main_on)
     ret.cruiseState.speedOffset = 0.
-    if self.CP.carFingerprint == CAR.RAV4H:
-      # ignore standstill in hybrid rav4, since pcm allows to restart without
+    if self.CP.carFingerprint in [CAR.RAV4H, CAR.HIGHLANDERH, CAR.HIGHLANDER]:
+      # ignore standstill in hybrid vehicles, since pcm allows to restart without
       # receiving any special command
       ret.cruiseState.standstill = False
     else:
       ret.cruiseState.standstill = self.CS.pcm_acc_status == 7
 
-    # TODO: button presses
     buttonEvents = []
-
     if self.CS.left_blinker_on != self.CS.prev_left_blinker_on:
       be = car.CarState.ButtonEvent.new_message()
       be.type = 'leftBlinker'
@@ -300,7 +331,7 @@ class CarInterface(object):
 
   # pass in a car.CarControl
   # to be called @ 100hz
-  def apply(self, c):
+  def apply(self, c, perception_state=log.Live20Data.new_message()):
 
     self.CC.update(self.sendcan, c.enabled, self.CS, self.frame,
                    c.actuators, c.cruiseControl.cancel, c.hudControl.visualAlert,

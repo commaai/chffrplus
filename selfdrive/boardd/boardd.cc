@@ -39,6 +39,7 @@
 #define SAFETY_HONDA_BOSCH 4
 #define SAFETY_FORD 5
 #define SAFETY_CADILLAC 6
+#define SAFETY_HYUNDAI 7
 #define SAFETY_TOYOTA_NOLIMITS 0x1336
 #define SAFETY_ALLOUTPUT 0x1337
 
@@ -53,7 +54,7 @@ pthread_mutex_t usb_lock;
 bool spoofing_started = false;
 bool fake_send = false;
 bool loopback_can = false;
-bool has_pigeon = false;
+bool is_grey_panda = false;
 
 pthread_t safety_setter_thread_handle = -1;
 pthread_t pigeon_thread_handle = -1;
@@ -112,6 +113,9 @@ void *safety_setter_thread(void *s) {
     break;
   case (int)cereal::CarParams::SafetyModels::CADILLAC:
     safety_setting = SAFETY_CADILLAC;
+    break;
+  case (int)cereal::CarParams::SafetyModels::HYUNDAI:
+    safety_setting = SAFETY_HYUNDAI;
     break;
   default:
     LOGE("unknown safety model: %d", safety_model);
@@ -173,6 +177,7 @@ bool usb_connect() {
 
   if (is_pigeon[0]) {
     LOGW("grey panda detected");
+    is_grey_panda = true;
     pigeon_needs_init = true;
     if (pigeon_thread_handle == -1) {
       err = pthread_create(&pigeon_thread_handle, NULL, pigeon_thread, NULL);
@@ -295,6 +300,7 @@ void can_health(void *s) {
   healthData.setControlsAllowed(health.controls_allowed);
   healthData.setGasInterceptorDetected(health.gas_interceptor_detected);
   healthData.setStartedSignalDetected(health.started_signal_detected);
+  healthData.setIsGreyPanda(is_grey_panda);
 
   // send to health
   auto words = capnp::messageToFlatArray(msg);
@@ -582,7 +588,7 @@ void *pigeon_thread(void *crap) {
       //printf("got %d\n", len);
       alen += len;
     }
-    if (alen > 0) { 
+    if (alen > 0) {
       if (dat[0] == (char)0x00){
         LOGW("received invalid ublox message, resetting pigeon");
         pigeon_init();

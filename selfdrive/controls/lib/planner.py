@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 import os
 import zmq
-
-import numpy as np
 import math
+import numpy as np
+from copy import copy
+from cereal import log
 from collections import defaultdict
-
 from common.realtime import sec_since_boot
 from common.numpy_fast import interp
 import selfdrive.messaging as messaging
@@ -17,13 +17,12 @@ from selfdrive.controls.lib.pathplanner import PathPlanner
 from selfdrive.controls.lib.longitudinal_mpc import libmpc_py
 from selfdrive.controls.lib.speed_smoother import speed_smoother
 from selfdrive.controls.lib.longcontrol import LongCtrlState, MIN_CAN_SPEED
+from selfdrive.controls.lib.radar_helpers import _LEAD_ACCEL_TAU
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.2  # 5Hz
 MAX_SPEED_ERROR = 2.0
 AWARENESS_DECEL = -0.2     # car smoothly decel at .2m/s^2 when user is distracted
-_DEBUG = False
-_LEAD_ACCEL_TAU = 1.5
 
 GPS_PLANNER_ADDR = "192.168.5.1"
 
@@ -164,7 +163,7 @@ class LongitudinalMpc(object):
     dat.liveLongitudinalMpc.vLead = list(self.mpc_solution[0].v_l)
     dat.liveLongitudinalMpc.aLead = list(self.mpc_solution[0].a_l)
     dat.liveLongitudinalMpc.cost = self.mpc_solution[0].cost
-    dat.liveLongitudinalMpc.aLeadTau = self.l
+    dat.liveLongitudinalMpc.aLeadTau = self.a_lead_tau
     dat.liveLongitudinalMpc.qpIterations = qp_iterations
     dat.liveLongitudinalMpc.mpcId = self.mpc_id
     dat.liveLongitudinalMpc.calculationTime = calculation_time
@@ -179,7 +178,7 @@ class LongitudinalMpc(object):
     self.cur_state = ffi.new("state_t *")
     self.cur_state[0].v_ego = 0
     self.cur_state[0].a_ego = 0
-    self.l = _LEAD_ACCEL_TAU
+    self.a_lead_tau = _LEAD_ACCEL_TAU
 
   def set_cur_state(self, v, a):
     self.cur_state[0].v_ego = v
@@ -198,16 +197,10 @@ class LongitudinalMpc(object):
         v_lead = 0.0
         a_lead = 0.0
 
-      # Learn if constant acceleration
-      if abs(a_lead) < 0.5:
-        self.l = _LEAD_ACCEL_TAU
-      else:
-        self.l *= 0.9
-
-      l = max(self.l, -a_lead / (v_lead + 0.01))
+      self.a_lead_tau = max(lead.aLeadTau, -a_lead / (v_lead + 0.01))
       self.new_lead = False
       if not self.prev_lead_status or abs(x_lead - self.prev_lead_x) > 2.5:
-        self.libmpc.init_with_simulation(self.v_mpc, x_lead, v_lead, a_lead, l)
+        self.libmpc.init_with_simulation(self.v_mpc, x_lead, v_lead, a_lead, self.a_lead_tau)
         self.new_lead = True
 
       self.prev_lead_status = True
@@ -221,11 +214,11 @@ class LongitudinalMpc(object):
       self.cur_state[0].x_l = 50.0
       self.cur_state[0].v_l = CS.vEgo + 10.0
       self.cur_state[0].a_l = 0.0
-      l = _LEAD_ACCEL_TAU
+      self.a_lead_tau = _LEAD_ACCEL_TAU
 
     # Calculate mpc
     t = sec_since_boot()
-    n_its = self.libmpc.run_mpc(self.cur_state, self.mpc_solution, l)
+    n_its = self.libmpc.run_mpc(self.cur_state, self.mpc_solution, self.a_lead_tau)
     duration = int((sec_since_boot() - t) * 1e9)
     self.send_mpc_solution(n_its, duration)
 
@@ -304,6 +297,7 @@ class Planner(object):
 
     self.last_gps_planner_plan = None
     self.gps_planner_active = False
+    self.perception_state = log.Live20Data.new_message()
 
   def choose_solution(self, v_cruise_setpoint, enabled):
     if enabled:
@@ -315,10 +309,11 @@ class Planner(object):
 
       slowest = min(solutions, key=solutions.get)
 
-      if _DEBUG:
-        print "D_SOL", solutions, slowest, self.v_acc_sol, self.a_acc_sol
-        print "D_V", self.mpc1.v_mpc, self.mpc2.v_mpc, self.v_cruise
-        print "D_A", self.mpc1.a_mpc, self.mpc2.a_mpc, self.a_cruise
+      """
+      print "D_SOL", solutions, slowest, self.v_acc_sol, self.a_acc_sol
+      print "D_V", self.mpc1.v_mpc, self.mpc2.v_mpc, self.v_cruise
+      print "D_A", self.mpc1.a_mpc, self.mpc2.a_mpc, self.a_cruise
+      """
 
       self.longitudinalPlanSource = slowest
 
@@ -336,7 +331,7 @@ class Planner(object):
     self.v_acc_future = min([self.mpc1.v_mpc_future, self.mpc2.v_mpc_future, v_cruise_setpoint])
 
   # this runs whenever we get a packet that can change the plan
-  def update(self, CS, LaC, LoC, v_cruise_kph, user_distracted):
+  def update(self, CS, LaC, LoC, v_cruise_kph, force_slow_decel):
     cur_time = sec_since_boot()
     v_cruise_setpoint = v_cruise_kph * CV.KPH_TO_MS
 
@@ -374,6 +369,7 @@ class Planner(object):
           self.PP.c_prob = 1.0
 
     if l20 is not None:
+      self.perception_state = copy(l20.live20)
       self.last_l20_ts = l20.logMonoTime
       self.last_l20 = cur_time
       self.radar_dead = False
@@ -396,8 +392,9 @@ class Planner(object):
         # TODO: make a separate lookup for jerk tuning
         jerk_limits = [min(-0.1, accel_limits[0]), max(0.1, accel_limits[1])]
         accel_limits = limit_accel_in_turns(CS.vEgo, CS.steeringAngle, accel_limits, self.CP)
-        if user_distracted:
-          # if user is not responsive to awareness alerts, then start a smooth deceleration
+
+        if force_slow_decel:
+          # if required so, force a smooth deceleration
           accel_limits[1] = min(accel_limits[1], AWARENESS_DECEL)
           accel_limits[0] = min(accel_limits[0], accel_limits[1])
 

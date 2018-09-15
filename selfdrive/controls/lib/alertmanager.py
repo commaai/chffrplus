@@ -6,6 +6,7 @@ import copy
 
 # Priority
 class Priority:
+  HIGHEST = 4
   HIGH = 3
   MID = 2
   LOW = 1
@@ -25,7 +26,8 @@ class Alert(object):
                audible_alert,
                duration_sound,
                duration_hud_alert,
-               duration_text):
+               duration_text,
+               alert_rate=0.):
 
     self.alert_text_1 = alert_text_1
     self.alert_text_2 = alert_text_2
@@ -40,6 +42,7 @@ class Alert(object):
     self.duration_text = duration_text
 
     self.start_time = 0.
+    self.alert_rate = alert_rate
 
     # typecheck that enums are valid on startup
     tst = car.CarControl.new_message()
@@ -71,10 +74,10 @@ class AlertManager(object):
         Priority.MID, None, "beepSingle", .2, 0., 0.),
 
     "fcw": Alert(
-        "Brake!",
+        "BRAKE!",
         "Risk of Collision",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "fcw", "chimeRepeated", 1., 2., 2.),
+        Priority.HIGHEST, "fcw", "chimeRepeated", 1., 2., 2.),
 
     "steerSaturated": Alert(
         "TAKE CONTROL",
@@ -95,16 +98,58 @@ class AlertManager(object):
         Priority.LOW, None, None, .2, .2, .2),
 
     "preDriverDistracted": Alert(
-        "TAKE CONTROL",
+        "KEEP EYES ON ROAD: User Appears Distracted",
+        "",
+        AlertStatus.normal, AlertSize.small,
+        Priority.LOW, "steerRequired", None, 0., .1, .1, alert_rate=0.75),
+
+    "promptDriverDistracted": Alert(
+        "KEEP EYES ON ROAD",
         "User Appears Distracted",
         AlertStatus.userPrompt, AlertSize.mid,
-        Priority.LOW, "steerRequired", None, 0., .1, .1),
+        Priority.MID, "steerRequired", "chimeRepeated", .1, .1, .1),
 
     "driverDistracted": Alert(
-        "TAKE CONTROL TO REGAIN SPEED",
-        "User Appears Distracted",
+        "DISENGAGE IMMEDIATELY",
+        "User Was Distracted",
         AlertStatus.critical, AlertSize.full,
+        Priority.HIGH, "steerRequired", "chimeRepeated", .1, .1, .1),
+
+    "preDriverUnresponsive": Alert(
+        "TOUCH STEERING WHEEL: No Driver Monitoring",
+        "",
+        AlertStatus.normal, AlertSize.small,
+        Priority.LOW, "steerRequired", None, 0., .1, .1, alert_rate=0.75),
+
+    "promptDriverUnresponsive": Alert(
+        "TOUCH STEERING WHEEL",
+        "User Is Unresponsive",
+        AlertStatus.userPrompt, AlertSize.mid,
         Priority.MID, "steerRequired", "chimeRepeated", .1, .1, .1),
+
+    "driverUnresponsive": Alert(
+        "DISENGAGE IMMEDIATELY",
+        "User Was Unresponsive",
+        AlertStatus.critical, AlertSize.full,
+        Priority.HIGH, "steerRequired", "chimeRepeated", .1, .1, .1),
+
+    "driverMonitorOff": Alert(
+        "DRIVER MONITOR IS UNAVAILABLE",
+        "Accuracy Is Low",
+        AlertStatus.normal, AlertSize.mid,
+        Priority.LOW, None, None, .4, 0., 4.),
+
+    "driverMonitorOn": Alert(
+        "DRIVER MONITOR IS AVAILABLE",
+        "Accuracy Is High",
+        AlertStatus.normal, AlertSize.mid,
+        Priority.LOW, None, None, .4, 0., 4.),
+
+    "geofence": Alert(
+        "DISENGAGEMENT REQUIRED",
+        "Not in Geofenced Area",
+        AlertStatus.userPrompt, AlertSize.mid,
+        Priority.HIGH, "steerRequired", "chimeRepeated", .1, .1, .1),
 
     "startup": Alert(
         "Be ready to take over at any time",
@@ -116,7 +161,7 @@ class AlertManager(object):
         "TAKE CONTROL IMMEDIATELY",
         "Ethical Dilemma Detected",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 3.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 3.),
 
     "steerTempUnavailableNoEntry": Alert(
         "openpilot Unavailable",
@@ -136,11 +181,17 @@ class AlertManager(object):
         AlertStatus.userPrompt, AlertSize.mid,
         Priority.LOW, None, None, 0., 0., .2),
 
-    "debugAlert": Alert( 
-        "DEBUG ALERT", 
-        "", 
-        AlertStatus.userPrompt, AlertSize.mid, 
-        Priority.LOW, None, None, .1, .1, .1), 
+    "belowSteerSpeed": Alert(
+        "TAKE CONTROL",
+        "Steer Unavailable Below ",
+        AlertStatus.userPrompt, AlertSize.mid,
+        Priority.MID, "steerRequired", None, 0., 0., .1),
+
+    "debugAlert": Alert(
+        "DEBUG ALERT",
+        "",
+        AlertStatus.userPrompt, AlertSize.mid,
+        Priority.LOW, None, None, .1, .1, .1),
 
     # Non-entry only alerts
     "wrongCarModeNoEntry": Alert(
@@ -239,73 +290,73 @@ class AlertManager(object):
         "TAKE CONTROL IMMEDIATELY",
         "Radar Error: Restart the Car",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "radarFault": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Radar Error: Restart the Car",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "modelCommIssue": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Model Error: Check Internet Connection",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "controlsFailed": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Controls Failed",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "controlsMismatch": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Controls Mismatch",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "commIssue": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "CAN Error: Check Connections",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "steerUnavailable": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Steer Fault: Restart the Car",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "brakeUnavailable": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Brake Fault: Restart the Car",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "gasUnavailable": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Gas Fault: Restart the Car",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "reverseGear": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Reverse Gear",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "cruiseDisabled": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Cruise Is Off",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "plannerError": Alert(
         "TAKE CONTROL IMMEDIATELY",
         "Planner Solution Error",
         AlertStatus.critical, AlertSize.full,
-        Priority.HIGH, "steerRequired", "chimeRepeated", 1., 3., 4.),
+        Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     # not loud cancellations (user is in control)
     "noTarget": Alert(
@@ -362,6 +413,12 @@ class AlertManager(object):
         "ESP Off",
         AlertStatus.normal, AlertSize.mid,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
+
+    "geofenceNoEntry": Alert(
+        "openpilot Unavailable",
+        "Not in Geofenced Area",
+        AlertStatus.normal, AlertSize.mid,
+        Priority.MID, None, "chimeDouble", .4, 2., 3.),
 
     "radarCommIssueNoEntry": Alert(
         "openpilot Unavailable",
@@ -494,6 +551,7 @@ class AlertManager(object):
     self.alert_size = AlertSize.none
     self.visual_alert = "none"
     self.audible_alert = "none"
+    self.alert_rate = 0.
 
     if ca:
       if ca.start_time + ca.duration_sound > cur_time:
@@ -507,3 +565,4 @@ class AlertManager(object):
         self.alert_text_2 = ca.alert_text_2
         self.alert_status = ca.alert_status
         self.alert_size = ca.alert_size
+        self.alert_rate = ca.alert_rate
