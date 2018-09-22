@@ -1,3 +1,10 @@
+Version 0.5.4 (2018-09-24)
+========================
+ * New Model!
+ * Improve longitudinal mpc in mid-low speed braking
+ * Honda Accord hybrid support thanks to energee!
+ * Ship mpc binaries: this is the last long openpilot build time
+
 Version 0.5.3 (2018-09-03)
 ========================
  * Hyundai Santa Fe support!
