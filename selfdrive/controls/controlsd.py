@@ -46,7 +46,7 @@ def isEnabled(state):
 
 
 def data_sample(CI, CC, thermal, calibration, health, driver_monitor, gps_location,
-                poller, cal_status, cal_perc, overtemp, free_space, charger_disabled,
+                poller, cal_status, cal_perc, overtemp, free_space, low_battery,
                 driver_status, geofence, state, mismatch_counter, params):
 
   # *** read can and compute car states ***
@@ -80,11 +80,11 @@ def data_sample(CI, CC, thermal, calibration, health, driver_monitor, gps_locati
     # under 15% of space free no enable allowed
     free_space = td.thermal.freeSpace < 0.15
 
-    # charger disabled
-    charger_disabled = td.thermal.chargerDisabled
+    # at zero percent battery, OP should not be allowed
+    low_battery = td.thermal.batteryPercent < 1
 
-  if charger_disabled:
-    events.append(create_event('chargerDisabled', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
+  if low_battery:
+    events.append(create_event('lowBattery', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
 
   if overtemp:
     events.append(create_event('overheat', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
@@ -124,7 +124,7 @@ def data_sample(CI, CC, thermal, calibration, health, driver_monitor, gps_locati
   if geofence is not None and not geofence.in_geofence:
     events.append(create_event('geofence', [ET.NO_ENTRY, ET.WARNING]))
 
-  return CS, events, cal_status, cal_perc, overtemp, free_space, charger_disabled, mismatch_counter
+  return CS, events, cal_status, cal_perc, overtemp, free_space, low_battery, mismatch_counter
 
 
 def calc_plan(CS, CP, events, PL, LaC, LoC, v_cruise_kph, driver_status, geofence):
@@ -488,7 +488,7 @@ def controlsd_thread(gctx=None, rate=100, default_bias=0.):
   cal_status = Calibration.INVALID
   cal_perc = 0
   mismatch_counter = 0
-  charger_disabled = False
+  low_battery = False
 
   rk = Ratekeeper(rate, print_delay_threshold=2./1000)
 
@@ -509,8 +509,8 @@ def controlsd_thread(gctx=None, rate=100, default_bias=0.):
     prof.checkpoint("Ratekeeper", ignore=True)
 
     # sample data and compute car events
-    CS, events, cal_status, cal_perc, overtemp, free_space, charger_disabled, mismatch_counter = data_sample(CI, CC, thermal, cal, health,
-      driver_monitor, gps_location, poller, cal_status, cal_perc, overtemp, free_space, charger_disabled, driver_status, geofence, state, mismatch_counter, params)
+    CS, events, cal_status, cal_perc, overtemp, free_space, low_battery, mismatch_counter = data_sample(CI, CC, thermal, cal, health,
+      driver_monitor, gps_location, poller, cal_status, cal_perc, overtemp, free_space, low_battery, driver_status, geofence, state, mismatch_counter, params)
     prof.checkpoint("Sample")
 
     # define plan

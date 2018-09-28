@@ -178,13 +178,8 @@ def thermald_thread():
       msg.thermal.batteryCurrent = int(f.read())
     with open("/sys/class/power_supply/battery/voltage_now") as f:
       msg.thermal.batteryVoltage = int(f.read())
-
-    if LEON:
-      f = open("/sys/class/power_supply/usb-parallel/present")
-    else:
-      f = open("/sys/class/power_supply/usb/present")
-    msg.thermal.usbOnline = bool(int(f.read()))
-    f.close()
+    with open("/sys/class/power_supply/usb/online") as f:
+      msg.thermal.usbOnline = bool(int(f.read()))
 
     current_filter.update(msg.thermal.batteryCurrent / 1e6)
     msg.thermal.chargerDisabled = current_filter.x > 1.0   # if current is ? 1A out, then charger might be off

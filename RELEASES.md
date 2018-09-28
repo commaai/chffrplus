@@ -1,9 +1,13 @@
-Version 0.5.4 (2018-09-24)
+Version 0.5.4 (2018-09-25)
 ========================
- * New Model!
+ * New Driving Model
+ * New Driver Monitoring Model
  * Improve longitudinal mpc in mid-low speed braking
  * Honda Accord hybrid support thanks to energee!
- * Ship mpc binaries: this is the last long openpilot build time
+ * Ship mpc binaries and sensibly reduce build time
+ * Calibration more stable
+ * More Hyundai and Kia cars supported thanks to emmertex!
+ * Various GM Volt improvements thanks to vntarasov!
 
 Version 0.5.3 (2018-09-03)
 ========================

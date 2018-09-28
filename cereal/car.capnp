@@ -70,7 +70,7 @@ struct CarEvent @0x9b1657f34caf3ad3 {
     driverUnresponsive @45;
     belowSteerSpeed @46;
     calibrationProgress @47;
-    chargerDisabled @48;
+    lowBattery @48;
   }
 }
 

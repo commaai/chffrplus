@@ -243,9 +243,9 @@ class AlertManager(object):
         AlertStatus.normal, AlertSize.mid,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
 
-    "chargerDisabledNoEntry": Alert(
+    "lowBatteryNoEntry": Alert(
         "openpilot Unavailable",
-        "Charger Error: EON not charging",
+        "Low Battery",
         AlertStatus.normal, AlertSize.mid,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
 
@@ -292,9 +292,9 @@ class AlertManager(object):
         AlertStatus.critical, AlertSize.full,
         Priority.MID, "steerRequired", "chimeRepeated", 1., 3., 3.),
 
-    "chargerDisabled": Alert(
+    "lowBattery": Alert(
         "TAKE CONTROL IMMEDIATELY",
-        "Charger Error",
+        "Low Battery",
         AlertStatus.critical, AlertSize.full,
         Priority.MID, "steerRequired", "chimeRepeated", 1., 3., 3.),
 
@@ -337,13 +337,13 @@ class AlertManager(object):
 
     "steerUnavailable": Alert(
         "TAKE CONTROL IMMEDIATELY",
-        "Steer Fault: Restart the Car",
+        "LKAS Fault: Restart the Car",
         AlertStatus.critical, AlertSize.full,
         Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
     "brakeUnavailable": Alert(
         "TAKE CONTROL IMMEDIATELY",
-        "Brake Fault: Restart the Car",
+        "Cruise Fault: Restart the Car",
         AlertStatus.critical, AlertSize.full,
         Priority.HIGHEST, "steerRequired", "chimeRepeated", 1., 3., 4.),
 
@@ -465,13 +465,13 @@ class AlertManager(object):
 
     "steerUnavailableNoEntry": Alert(
         "openpilot Unavailable",
-        "Steer Fault: Restart the Car",
+        "LKAS Fault: Restart the Car",
         AlertStatus.normal, AlertSize.mid,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
 
     "brakeUnavailableNoEntry": Alert(
         "openpilot Unavailable",
-        "Brake Fault: Restart the Car",
+        "Cruise Fault: Restart the Car",
         AlertStatus.normal, AlertSize.mid,
         Priority.LOW, None, "chimeDouble", .4, 2., 3.),
 
@@ -507,19 +507,19 @@ class AlertManager(object):
 
     # permanent alerts
     "steerUnavailablePermanent": Alert(
-        "STEER FAULT: Restart the car to engage",
+        "LKAS Fault: Restart the car to engage",
         "",
         AlertStatus.normal, AlertSize.small,
         Priority.LOW_LOWEST, None, None, 0., 0., .2),
 
     "brakeUnavailablePermanent": Alert(
-        "BRAKE FAULT: Restart the car to engage",
+        "Cruise Fault: Restart the car to engage",
         "",
         AlertStatus.normal, AlertSize.small,
         Priority.LOW_LOWEST, None, None, 0., 0., .2),
 
     "lowSpeedLockoutPermanent": Alert(
-        "CRUISE FAULT: Restart the car to engage",
+        "Cruise Fault: Restart the car to engage",
         "",
         AlertStatus.normal, AlertSize.small,
         Priority.LOW_LOWEST, None, None, 0., 0., .2),
